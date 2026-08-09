@@ -2,9 +2,10 @@ from ails_intel.collector_runner import existing_signal_action, signal_priority_
 
 
 def test_structured_signal_priority_is_not_source_priority():
+    assert signal_priority_for_channel("C1") == "P1"
     assert signal_priority_for_channel("C3") == "P1"
+    assert signal_priority_for_channel("C4") == "P1"
     assert signal_priority_for_channel("C5") == "P2"
-    assert signal_priority_for_channel("C1") == "P2"
 
 
 def test_existing_signal_action_new_when_absent():

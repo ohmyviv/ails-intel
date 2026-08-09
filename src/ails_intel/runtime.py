@@ -40,12 +40,14 @@ def load_source_specs(store, source_ids: set[str]) -> dict[str, SourceSpec]:
 
 def collector_specs(cfg) -> list[CollectorSpec]:
     raw = cfg["structured_collectors_json"].value
+    reserved = {"id", "source_id", "channel_id", "enabled"}
     return [
         CollectorSpec(
             collector_id=str(x["id"]),
             source_id=str(x["source_id"]),
             channel_id=str(x["channel_id"]),
             enabled=bool(x.get("enabled", True)),
+            options={str(k): v for k, v in x.items() if k not in reserved},
         )
         for x in raw
         if bool(x.get("enabled", True))
@@ -62,5 +64,9 @@ def build_run_key(cfg, now_bjt: datetime) -> str:
     return f"{prefix}-{now_bjt:%Y%m%d}-{h:02d}{m:02d}-BJT"
 
 def collector_window_days(cfg, channel_id: str) -> int:
+    if channel_id == "C1":
+        entry = cfg.get("c1_search_window_hours")
+        hours = float(entry.value) if entry is not None else 48.0
+        return max(1, int((hours + 23) // 24))
     key = "technical_window_days" if channel_id == "C5" else "backfill_window_days"
     return int(float(cfg[key].value))

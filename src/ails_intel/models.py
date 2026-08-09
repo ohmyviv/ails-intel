@@ -34,6 +34,7 @@ class CollectorSpec:
     source_id: str
     channel_id: str
     enabled: bool = True
+    options: dict[str, object] = field(default_factory=dict)
 
 @dataclass
 class RawItem:
