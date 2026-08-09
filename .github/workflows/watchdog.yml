@@ -6,6 +6,11 @@ on:
     - cron: "17 13 * * *"
   workflow_dispatch:
     inputs:
+      date:
+        description: "Optional report date to check (YYYY-MM-DD); blank means today in configured timezone"
+        required: false
+        type: string
+        default: ""
       require_shadow:
         description: "Also require the v11 shadow run"
         required: false
@@ -43,11 +48,15 @@ jobs:
       - name: Check expected business run state
         env:
           AILS_SPREADSHEET_ID: ${{ secrets.AILS_SPREADSHEET_ID }}
+          WATCHDOG_DATE: ${{ inputs.date || '' }}
           REQUIRE_SHADOW: ${{ inputs.require_shadow || false }}
         shell: bash
         run: |
-          if [ "$REQUIRE_SHADOW" = "true" ]; then
-            python -m ails_intel.watchdog --require-shadow
-          else
-            python -m ails_intel.watchdog
+          args=()
+          if [ -n "$WATCHDOG_DATE" ]; then
+            args+=(--date "$WATCHDOG_DATE")
           fi
+          if [ "$REQUIRE_SHADOW" = "true" ]; then
+            args+=(--require-shadow)
+          fi
+          python -m ails_intel.watchdog "${args[@]}"
