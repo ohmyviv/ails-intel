@@ -65,7 +65,8 @@ def build_run_key(cfg, now_bjt: datetime) -> str:
 
 def collector_window_days(cfg, channel_id: str) -> int:
     if channel_id == "C1":
-        hours = float(cfg.get("c1_search_window_hours", type("X", (), {"value": 48})()).value)
+        entry = cfg.get("c1_search_window_hours")
+        hours = float(entry.value) if entry is not None else 48.0
         return max(1, int((hours + 23) // 24))
     key = "technical_window_days" if channel_id == "C5" else "backfill_window_days"
     return int(float(cfg[key].value))
