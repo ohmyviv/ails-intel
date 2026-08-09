@@ -26,10 +26,19 @@ COLLECTORS = {
     "COL-CTGOV": lambda: ClinicalTrialsCollector(),
 }
 
+
 def _now(tz_name: str):
     return datetime.now(ZoneInfo(tz_name))
 
-def _signal(item, *, run_key, batch_id, producer_id, channel_id, source_id, priority, discovered_at, date_token):
+
+def signal_priority_for_channel(channel_id: str) -> str:
+    # SourceRegistry priority describes how important it is to scan a source; it
+    # is not an event-level severity label. Structured discovery clues begin
+    # conservatively and the reasoning worker may promote material events later.
+    return "P1" if channel_id == "C3" else "P2"
+
+
+def _signal(item, *, run_key, batch_id, producer_id, channel_id, source_id, discovered_at, date_token):
     key = make_signal_key(source_id, item.stable_id, item.url, item.title, item.published_date)
     return key, SignalRecord({
         "signal_id": make_signal_id(date_token, key), "run_key": run_key,
@@ -41,10 +50,11 @@ def _signal(item, *, run_key, batch_id, producer_id, channel_id, source_id, prio
         "event_date_hint": item.event_date, "published_at_hint": item.published_date,
         "first_public_at_hint": item.first_public_at, "url": item.url, "stable_id": item.stable_id,
         "signal_key": key, "event_key_hint": "",
-        "priority_hint": priority if priority in {"P0","P1","P2"} else "P2",
-        "ai_core_hint": "UNKNOWN", "life_science_core_hint": "UNKNOWN",
+        "priority_hint": signal_priority_for_channel(channel_id),
+        "ai_core_hint": "TRUE", "life_science_core_hint": "TRUE",
         "signal_state": "active", "notes": "", "schema_version": "v11.0",
     })
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -123,7 +133,7 @@ def main():
         for item in outcome.relevant_items:
             key, signal = _signal(
                 item, run_key=run_key, batch_id=batch_id, producer_id=producer_id,
-                channel_id=spec.channel_id, source_id=spec.source_id, priority=source.priority,
+                channel_id=spec.channel_id, source_id=spec.source_id,
                 discovered_at=checked_at, date_token=now.strftime("%Y%m%d"),
             )
             if key in existing_keys:
@@ -166,6 +176,7 @@ def main():
         error_count=failed, elapsed_ms=elapsed_ms,
     )
     raise SystemExit(0 if failed == 0 else 1)
+
 
 if __name__ == "__main__":
     main()
