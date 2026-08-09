@@ -15,6 +15,63 @@ class SheetsStore:
             ).execute().get("values", [])
         )
 
+    def dict_rows(self, a1_range: str) -> list[dict[str, object]]:
+        """Return Sheet rows keyed by their live header without logging content."""
+        rows = self.rows(a1_range)
+        if not rows:
+            return []
+        header = [str(x).strip() for x in rows[0]]
+        out: list[dict[str, object]] = []
+        for raw in rows[1:]:
+            row = list(raw) + [""] * max(0, len(header) - len(raw))
+            out.append({header[i]: row[i] for i in range(len(header))})
+        return out
+
+    def active_signals(self, run_key: str) -> list[dict[str, object]]:
+        return [
+            row
+            for row in self.dict_rows("Lite_Signals!A:AB")
+            if str(row.get("run_key", "")).strip() == run_key
+            and str(row.get("signal_state", "")).strip() == "active"
+        ]
+
+    def coverage_rows(self, run_key: str) -> list[dict[str, object]]:
+        return [
+            row
+            for row in self.dict_rows("Lite_SourceCoverage!A:X")
+            if str(row.get("run_key", "")).strip() == run_key
+        ]
+
+    def candidate_rows(self, run_key: str, attempt_id: str = "") -> list[dict[str, object]]:
+        rows = [
+            row
+            for row in self.dict_rows("Lite_Candidates!A:AK")
+            if str(row.get("run_key", "")).strip() == run_key
+        ]
+        if attempt_id:
+            rows = [row for row in rows if str(row.get("attempt_id", "")).strip() == attempt_id]
+        return rows
+
+    def run_rows(self, run_key: str, attempt_id: str = "") -> list[dict[str, object]]:
+        rows = [
+            row
+            for row in self.dict_rows("Lite_Runs!A:BN")
+            if str(row.get("run_key", "")).strip() == run_key
+        ]
+        if attempt_id:
+            rows = [row for row in rows if str(row.get("attempt_id", "")).strip() == attempt_id]
+        return rows
+
+    def daily_item_rows(self, run_key: str) -> list[dict[str, object]]:
+        return [
+            row
+            for row in self.dict_rows("Lite_DailyItems!A:AD")
+            if str(row.get("run_key", "")).strip() == run_key
+        ]
+
+    def event_index_rows(self) -> list[dict[str, object]]:
+        return self.dict_rows("Lite_EventIndex!A:AA")
+
     def signal_key_records(self, run_key: str) -> dict[str, dict[str, object]]:
         rows = self.rows("Lite_Signals!A:AB")
         if not rows:
