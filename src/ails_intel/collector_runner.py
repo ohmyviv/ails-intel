@@ -11,6 +11,7 @@ from ails_intel.collectors.base import Window
 from ails_intel.collectors.biorxiv import BiorxivCollector
 from ails_intel.collectors.clinicaltrials import ClinicalTrialsCollector
 from ails_intel.collectors.pubmed import PubMedCollector
+from ails_intel.collectors.rss import RssCollector
 from ails_intel.http_client import HttpClient
 from ails_intel.models import CoverageRecord, SignalRecord
 from ails_intel.runtime import build_run_key, collector_specs, collector_window_days, load_active_config, load_source_specs
@@ -18,12 +19,12 @@ from ails_intel.safe_logger import log_event
 from ails_intel.signal_keys import make_coverage_id, make_signal_id, make_signal_key
 from ails_intel.state.sheets import SheetsStore
 
-COLLECTORS = {
-    "COL-PUBMED": lambda: PubMedCollector(),
-    "COL-ARXIV": lambda: ArxivCollector(),
-    "COL-BIORXIV": lambda: BiorxivCollector("biorxiv"),
-    "COL-MEDRXIV": lambda: BiorxivCollector("medrxiv"),
-    "COL-CTGOV": lambda: ClinicalTrialsCollector(),
+FIXED_COLLECTORS = {
+    "COL-PUBMED": lambda spec: PubMedCollector(),
+    "COL-ARXIV": lambda spec: ArxivCollector(),
+    "COL-BIORXIV": lambda spec: BiorxivCollector("biorxiv"),
+    "COL-MEDRXIV": lambda spec: BiorxivCollector("medrxiv"),
+    "COL-CTGOV": lambda spec: ClinicalTrialsCollector(),
 }
 
 DIAGNOSTIC_INVALIDATION_NOTE = "diagnostic_first_run_pre_sprint2.1"
@@ -33,11 +34,30 @@ def _now(tz_name: str):
     return datetime.now(ZoneInfo(tz_name))
 
 
+def _is_rss_spec(spec) -> bool:
+    return str(spec.options.get("kind", "")).strip().lower() == "rss"
+
+
+def _collector_supported(spec) -> bool:
+    return spec.collector_id in FIXED_COLLECTORS or _is_rss_spec(spec)
+
+
+def _build_collector(spec):
+    if spec.collector_id in FIXED_COLLECTORS:
+        return FIXED_COLLECTORS[spec.collector_id](spec)
+    if _is_rss_spec(spec):
+        return RssCollector(
+            feed_url=str(spec.options.get("feed_url", "")),
+            relevance_query=str(spec.options.get("relevance_query", "")),
+        )
+    raise KeyError(spec.collector_id)
+
+
 def signal_priority_for_channel(channel_id: str) -> str:
-    # SourceRegistry priority describes how important it is to scan a source; it
-    # is not an event-level severity label. Structured discovery clues begin
-    # conservatively and the reasoning worker may promote material events later.
-    return "P1" if channel_id == "C3" else "P2"
+    # SourceRegistry priority describes scan importance, not event severity.
+    # Hard/clinical/product/regional discovery starts at P1; technical frontier
+    # starts at P2. The reasoning worker may promote a verified material event.
+    return "P2" if channel_id == "C5" else "P1"
 
 
 def existing_signal_action(record: dict[str, object] | None) -> str:
@@ -50,14 +70,26 @@ def existing_signal_action(record: dict[str, object] | None) -> str:
     return "duplicate"
 
 
-def _signal(item, *, run_key, batch_id, producer_id, channel_id, source_id, discovered_at, date_token):
+def _signal(
+    item,
+    *,
+    run_key,
+    batch_id,
+    producer_id,
+    channel_id,
+    route_id,
+    source_id,
+    discovery_method,
+    discovered_at,
+    date_token,
+):
     key = make_signal_key(source_id, item.stable_id, item.url, item.title, item.published_date)
     return key, SignalRecord({
         "signal_id": make_signal_id(date_token, key), "run_key": run_key,
         "collection_batch_id": batch_id, "producer_id": producer_id, "origin_attempt_id": "",
         "discovered_at_bjt": discovered_at, "channel_id": channel_id,
-        "route_id": f"api/{producer_id.split('/')[-1]}", "source_id": source_id,
-        "discovery_method": "api", "raw_title": item.title, "raw_snippet": item.snippet,
+        "route_id": route_id, "source_id": source_id,
+        "discovery_method": discovery_method, "raw_title": item.title, "raw_snippet": item.snippet,
         "entity_hint": "", "action_hint": "", "asset_hint": "",
         "event_date_hint": item.event_date, "published_at_hint": item.published_date,
         "first_public_at_hint": item.first_public_at, "url": item.url, "stable_id": item.stable_id,
@@ -66,6 +98,10 @@ def _signal(item, *, run_key, batch_id, producer_id, channel_id, source_id, disc
         "ai_core_hint": "TRUE", "life_science_core_hint": "TRUE",
         "signal_state": "active", "notes": "", "schema_version": "v11.0",
     })
+
+
+def _legacy_status(execution_status: str) -> str:
+    return {"complete": "ok", "partial": "partial", "failed": "failed"}.get(execution_status, execution_status)
 
 
 def main():
@@ -90,7 +126,7 @@ def main():
     run_key = build_run_key(cfg, now)
     specs = collector_specs(cfg)
     configured_ids = {s.collector_id for s in specs}
-    unsupported = configured_ids - set(COLLECTORS)
+    unsupported = {s.collector_id for s in specs if not _collector_supported(s)}
     if unsupported:
         log_event("structured_collectors", component="collector_runner", status="FAIL", run_key=run_key, error_code="UNSUPPORTED_CONFIGURED_COLLECTOR", error_count=len(unsupported))
         raise SystemExit(1)
@@ -115,13 +151,16 @@ def main():
     total_duplicates = 0
     total_reactivated = 0
     for spec in specs:
-        collector = COLLECTORS[spec.collector_id]()
+        collector = _build_collector(spec)
         source = sources[spec.source_id]
         max_results = int(limits.get(spec.collector_id, cfg["collector_default_max_results"].value))
-        days = collector_window_days(cfg, spec.channel_id)
+        configured_days = spec.options.get("window_days", "")
+        days = int(float(configured_days)) if str(configured_days).strip() else collector_window_days(cfg, spec.channel_id)
         window = Window(start=(now.date() - timedelta(days=days)), end=now.date())
         producer_id = f"collector/{spec.collector_id}"
-        route_id = f"api/{spec.collector_id}"
+        is_rss = _is_rss_spec(spec)
+        route_kind = "rss" if is_rss else "api"
+        route_id = f"{route_kind}/{spec.collector_id}"
         batch_id = f"COL-{now:%Y%m%d-%H%M}-BJT-{spec.collector_id}"
         checked_at = now.isoformat(timespec="seconds")
 
@@ -131,7 +170,7 @@ def main():
             failure_reason = type(exc).__name__
             coverage.append(CoverageRecord({
                 "run_key": run_key, "source_id": spec.source_id, "source_name": source.source_name,
-                "source_group": "structured", "route": "api", "status": "failed", "hit_count": 0,
+                "source_group": "structured", "route": route_kind, "status": "failed", "hit_count": 0,
                 "representative_url": "", "failure_reason": failure_reason, "checked_at_bjt": checked_at,
                 "fallback_used": "FALSE", "notes": "", "retrieval_status": "failed", "hit_status": "no_hit",
                 "coverage_id": make_coverage_id(run_key, producer_id, "", spec.channel_id, route_id, spec.source_id),
@@ -149,8 +188,8 @@ def main():
         for item in outcome.relevant_items:
             key, signal = _signal(
                 item, run_key=run_key, batch_id=batch_id, producer_id=producer_id,
-                channel_id=spec.channel_id, source_id=spec.source_id,
-                discovered_at=checked_at, date_token=now.strftime("%Y%m%d"),
+                channel_id=spec.channel_id, route_id=route_id, source_id=spec.source_id,
+                discovery_method=route_kind, discovered_at=checked_at, date_token=now.strftime("%Y%m%d"),
             )
             record = existing_records.get(key)
             action = existing_signal_action(record)
@@ -175,7 +214,7 @@ def main():
         hit_count = len(outcome.relevant_items)
         coverage.append(CoverageRecord({
             "run_key": run_key, "source_id": spec.source_id, "source_name": source.source_name,
-            "source_group": "structured", "route": "api", "status": outcome.execution_status,
+            "source_group": "structured", "route": route_kind, "status": _legacy_status(outcome.execution_status),
             "hit_count": hit_count, "representative_url": outcome.representative_url,
             "failure_reason": outcome.failure_reason, "checked_at_bjt": checked_at,
             "fallback_used": "FALSE", "notes": "", "retrieval_status": outcome.execution_status,
