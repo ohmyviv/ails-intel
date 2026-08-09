@@ -32,34 +32,18 @@ def _now(tz_name: str):
 def _signal(item, *, run_key, batch_id, producer_id, channel_id, source_id, priority, discovered_at, date_token):
     key = make_signal_key(source_id, item.stable_id, item.url, item.title, item.published_date)
     return key, SignalRecord({
-        "signal_id": make_signal_id(date_token, key),
-        "run_key": run_key,
-        "collection_batch_id": batch_id,
-        "producer_id": producer_id,
-        "origin_attempt_id": "",
-        "discovered_at_bjt": discovered_at,
-        "channel_id": channel_id,
-        "route_id": f"api/{producer_id.split('/')[-1]}",
-        "source_id": source_id,
-        "discovery_method": "api",
-        "raw_title": item.title,
-        "raw_snippet": item.snippet,
-        "entity_hint": "",
-        "action_hint": "",
-        "asset_hint": "",
-        "event_date_hint": item.event_date,
-        "published_at_hint": item.published_date,
-        "first_public_at_hint": item.first_public_at,
-        "url": item.url,
-        "stable_id": item.stable_id,
-        "signal_key": key,
-        "event_key_hint": "",
+        "signal_id": make_signal_id(date_token, key), "run_key": run_key,
+        "collection_batch_id": batch_id, "producer_id": producer_id, "origin_attempt_id": "",
+        "discovered_at_bjt": discovered_at, "channel_id": channel_id,
+        "route_id": f"api/{producer_id.split('/')[-1]}", "source_id": source_id,
+        "discovery_method": "api", "raw_title": item.title, "raw_snippet": item.snippet,
+        "entity_hint": "", "action_hint": "", "asset_hint": "",
+        "event_date_hint": item.event_date, "published_at_hint": item.published_date,
+        "first_public_at_hint": item.first_public_at, "url": item.url, "stable_id": item.stable_id,
+        "signal_key": key, "event_key_hint": "",
         "priority_hint": priority if priority in {"P0","P1","P2"} else "P2",
-        "ai_core_hint": "UNKNOWN",
-        "life_science_core_hint": "UNKNOWN",
-        "signal_state": "active",
-        "notes": "",
-        "schema_version": "v11.0",
+        "ai_core_hint": "UNKNOWN", "life_science_core_hint": "UNKNOWN",
+        "signal_state": "active", "notes": "", "schema_version": "v11.0",
     })
 
 def main():
@@ -83,9 +67,19 @@ def main():
     now = _now(str(cfg["timezone"].value))
     run_key = build_run_key(cfg, now)
     specs = collector_specs(cfg)
+    configured_ids = {s.collector_id for s in specs}
+    unsupported = configured_ids - set(COLLECTORS)
+    if unsupported:
+        log_event("structured_collectors", component="collector_runner", status="FAIL", run_key=run_key, error_code="UNSUPPORTED_CONFIGURED_COLLECTOR", error_count=len(unsupported))
+        raise SystemExit(1)
     if args.collector:
         wanted = set(args.collector)
+        unknown_requested = wanted - configured_ids
+        if unknown_requested:
+            log_event("structured_collectors", component="collector_runner", status="FAIL", run_key=run_key, error_code="UNKNOWN_REQUESTED_COLLECTOR", error_count=len(unknown_requested))
+            raise SystemExit(1)
         specs = [s for s in specs if s.collector_id in wanted]
+
     sources = load_source_specs(store, {s.source_id for s in specs})
     limits = cfg["collector_limits_json"].value
     timeout = float(cfg["collector_timeout_seconds"].value)
@@ -97,11 +91,7 @@ def main():
     all_new = []
     total_duplicates = 0
     for spec in specs:
-        collector_factory = COLLECTORS.get(spec.collector_id)
-        if collector_factory is None:
-            log_event("collector", component="collector_runner", status="FAIL", collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key, execution_status="failed", error_code="UNKNOWN_COLLECTOR")
-            continue
-        collector = collector_factory()
+        collector = COLLECTORS[spec.collector_id]()
         source = sources[spec.source_id]
         max_results = int(limits.get(spec.collector_id, cfg["collector_default_max_results"].value))
         days = collector_window_days(cfg, spec.channel_id)
