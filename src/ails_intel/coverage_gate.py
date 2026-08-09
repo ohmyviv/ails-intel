@@ -34,6 +34,17 @@ def _health(value: object) -> str:
     return text if text in VALID_HEALTH else "missing"
 
 
+def _truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"true", "1", "yes"}
+
+
+def _int_value(value: object, default: int = -1) -> int:
+    try:
+        return int(float(str(value or "0")))
+    except ValueError:
+        return default
+
+
 def evaluate_coverage(
     *,
     channel_health: Mapping[str, object],
@@ -148,3 +159,60 @@ def plan_rescue(
         tier_a_exact_sweep=bool(tier_a_exact_sweep) if required else False,
         max_new_candidates=max(0, int(max_new_candidates)) if required else 0,
     )
+
+
+def validate_gate_snapshot(
+    *,
+    run: Mapping[str, object],
+    mandatory_channels: Sequence[str],
+    channel_health: Mapping[str, object],
+    daily_items_for_run: int,
+    event_index_ownership_count: int,
+) -> list[str]:
+    """Validate the pre-freeze v11 shadow boundary without exposing private content."""
+    errors: list[str] = []
+    mandatory = [str(x).strip() for x in mandatory_channels if str(x).strip()]
+
+    pre = str(run.get("coverage_confidence_pre_rescue", "")).strip().upper()
+    final = str(run.get("coverage_confidence", "")).strip().upper()
+    if pre not in VALID_CONFIDENCE:
+        errors.append("invalid_pre_rescue_confidence")
+    if final not in VALID_CONFIDENCE:
+        errors.append("invalid_final_confidence")
+    if final == "LOW":
+        errors.append("final_coverage_still_low")
+
+    if str(run.get("stage", "")).strip() != "coverage_gate":
+        errors.append("stage_not_coverage_gate")
+    if str(run.get("final_status", "")).strip() != "ready_for_freeze":
+        errors.append("run_not_ready_for_freeze")
+    if str(run.get("resume_stage", "")).strip() != "freeze":
+        errors.append("resume_stage_not_freeze")
+    if str(run.get("state_status", "")).strip() != "verified":
+        errors.append("state_not_verified")
+    if str(run.get("delivery_status", "")).strip() not in {"", "not_started"}:
+        errors.append("delivery_started_before_freeze")
+    if str(run.get("canonical_attempt", "")).strip():
+        errors.append("shadow_attempt_must_not_be_canonical")
+    if not str(run.get("coverage_gate_reason", "")).strip():
+        errors.append("coverage_gate_reason_missing")
+
+    observed_total = _int_value(run.get("mandatory_channels_total"))
+    observed_complete = _int_value(run.get("mandatory_channels_completed"))
+    if observed_total != len(mandatory):
+        errors.append("mandatory_total_mismatch")
+    if observed_complete != len(mandatory):
+        errors.append("mandatory_not_all_complete")
+
+    for channel in mandatory:
+        if _health(channel_health.get(channel)) != "complete":
+            errors.append("mandatory_channel_not_complete")
+
+    if pre == "LOW" and not _truthy(run.get("rescue_triggered")):
+        errors.append("low_pre_rescue_without_rescue")
+    if daily_items_for_run != 0:
+        errors.append("dailyitems_written_before_freeze")
+    if event_index_ownership_count != 0:
+        errors.append("eventindex_written_in_shadow")
+
+    return sorted(set(errors))
