@@ -8,6 +8,7 @@ def test_unknown_log_field_rejected():
 
 
 def test_allowed_log_fields(capsys):
-    log_event("x", component="test", status="PASS", error_count=0)
+    log_event("x", component="test", status="PASS", error_count=0, reactivated_count=3)
     out = capsys.readouterr().out
     assert '"status":"PASS"' in out
+    assert '"reactivated_count":3' in out
