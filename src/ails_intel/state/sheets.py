@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ails_intel.models import COVERAGE_HEADERS, CoverageRecord, SignalRecord
 
+
 class SheetsStore:
     def __init__(self, service, spreadsheet_id: str):
         self.service = service
@@ -14,22 +15,64 @@ class SheetsStore:
             ).execute().get("values", [])
         )
 
-    def active_signal_keys(self, run_key: str) -> set[str]:
+    def signal_key_records(self, run_key: str) -> dict[str, dict[str, object]]:
         rows = self.rows("Lite_Signals!A:AB")
         if not rows:
-            return set()
+            return {}
         header = rows[0]
         pos = {h: i for i, h in enumerate(header)}
-        if "run_key" not in pos or "signal_key" not in pos:
-            raise RuntimeError("Lite_Signals headers missing run_key/signal_key")
-        out = set()
-        for row in rows[1:]:
+        required = {"run_key", "signal_key", "signal_state", "notes"}
+        missing = required - set(pos)
+        if missing:
+            raise RuntimeError(f"Lite_Signals headers missing: {sorted(missing)}")
+
+        out: dict[str, dict[str, object]] = {}
+        for idx, row in enumerate(rows[1:], start=2):
             row = list(row) + [""] * max(0, len(header) - len(row))
-            if str(row[pos["run_key"]]) == run_key:
-                key = str(row[pos["signal_key"]]).strip()
-                if key:
-                    out.add(key)
+            if str(row[pos["run_key"]]).strip() != run_key:
+                continue
+            key = str(row[pos["signal_key"]]).strip()
+            if not key:
+                continue
+            out[key] = {
+                "row": idx,
+                "state": str(row[pos["signal_state"]]).strip(),
+                "notes": str(row[pos["notes"]]).strip(),
+            }
         return out
+
+    def active_signal_keys(self, run_key: str) -> set[str]:
+        return {
+            key
+            for key, rec in self.signal_key_records(run_key).items()
+            if str(rec.get("state", "")).strip() == "active"
+        }
+
+    def reactivate_diagnostic_signals(self, updates: list[tuple[int, str]]) -> int:
+        """Reactivate only the one-time pre-Sprint-2.1 diagnostic rows.
+
+        The first live shadow run deliberately invalidated all of its rows after
+        quality defects were found. A later collector run may prove that some of
+        those exact signal keys are still valid under the corrected query logic.
+        For those diagnostic rows only, updating W:AA is a controlled migration
+        exception: it restores the corrected priority/core hints plus state/notes
+        without creating a duplicate deterministic signal_id/signal_key.
+        """
+        if not updates:
+            return 0
+        data = []
+        for row_idx, priority in updates:
+            data.append(
+                {
+                    "range": f"Lite_Signals!W{row_idx}:AA{row_idx}",
+                    "values": [[priority, "TRUE", "TRUE", "active", "revalidated_after_sprint2.1"]],
+                }
+            )
+        self.service.spreadsheets().values().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={"valueInputOption": "RAW", "data": data},
+        ).execute()
+        return len(updates)
 
     def append_signals(self, signals: list[SignalRecord]) -> int:
         if not signals:
