@@ -26,6 +26,8 @@ COLLECTORS = {
     "COL-CTGOV": lambda: ClinicalTrialsCollector(),
 }
 
+DIAGNOSTIC_INVALIDATION_NOTE = "diagnostic_first_run_pre_sprint2.1"
+
 
 def _now(tz_name: str):
     return datetime.now(ZoneInfo(tz_name))
@@ -36,6 +38,16 @@ def signal_priority_for_channel(channel_id: str) -> str:
     # is not an event-level severity label. Structured discovery clues begin
     # conservatively and the reasoning worker may promote material events later.
     return "P1" if channel_id == "C3" else "P2"
+
+
+def existing_signal_action(record: dict[str, object] | None) -> str:
+    if record is None:
+        return "new"
+    state = str(record.get("state", "")).strip()
+    notes = str(record.get("notes", "")).strip()
+    if state == "invalid" and notes == DIAGNOSTIC_INVALIDATION_NOTE:
+        return "reactivate"
+    return "duplicate"
 
 
 def _signal(item, *, run_key, batch_id, producer_id, channel_id, source_id, discovered_at, date_token):
@@ -95,11 +107,13 @@ def main():
     timeout = float(cfg["collector_timeout_seconds"].value)
     retries = int(float(cfg["collector_retry_limit"].value))
     http = HttpClient(timeout=timeout, retries=retries)
-    existing_keys = store.active_signal_keys(run_key)
+    existing_records = store.signal_key_records(run_key)
 
     coverage = []
     all_new = []
+    reactivation_updates: list[tuple[int, str]] = []
     total_duplicates = 0
+    total_reactivated = 0
     for spec in specs:
         collector = COLLECTORS[spec.collector_id]()
         source = sources[spec.source_id]
@@ -130,19 +144,33 @@ def main():
 
         new_for_collector = []
         duplicates = 0
+        reactivated = 0
+        priority = signal_priority_for_channel(spec.channel_id)
         for item in outcome.relevant_items:
             key, signal = _signal(
                 item, run_key=run_key, batch_id=batch_id, producer_id=producer_id,
                 channel_id=spec.channel_id, source_id=spec.source_id,
                 discovered_at=checked_at, date_token=now.strftime("%Y%m%d"),
             )
-            if key in existing_keys:
+            record = existing_records.get(key)
+            action = existing_signal_action(record)
+            if action == "duplicate":
                 duplicates += 1
                 continue
-            existing_keys.add(key)
+            if action == "reactivate":
+                row_idx = int(record["row"])
+                reactivation_updates.append((row_idx, priority))
+                record["state"] = "active"
+                record["notes"] = "revalidated_after_sprint2.1"
+                reactivated += 1
+                continue
+
+            existing_records[key] = {"row": 0, "state": "active", "notes": ""}
             new_for_collector.append(signal)
+
         all_new.extend(new_for_collector)
         total_duplicates += duplicates
+        total_reactivated += reactivated
 
         hit_count = len(outcome.relevant_items)
         coverage.append(CoverageRecord({
@@ -162,9 +190,10 @@ def main():
             collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key,
             execution_status=outcome.execution_status, saturation_status=outcome.saturation_status,
             results_seen=outcome.results_seen, signal_count=len(new_for_collector), duplicate_count=duplicates,
-            collection_batch_id=batch_id,
+            reactivated_count=reactivated, collection_batch_id=batch_id,
         )
 
+    store.reactivate_diagnostic_signals(reactivation_updates)
     store.append_signals(all_new)
     store.upsert_coverage(coverage)
     elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -173,7 +202,7 @@ def main():
         "structured_collectors", component="collector_runner",
         status="PASS" if failed == 0 else "FAIL", run_key=run_key,
         signal_count=len(all_new), duplicate_count=total_duplicates,
-        error_count=failed, elapsed_ms=elapsed_ms,
+        reactivated_count=total_reactivated, error_count=failed, elapsed_ms=elapsed_ms,
     )
     raise SystemExit(0 if failed == 0 else 1)
 
