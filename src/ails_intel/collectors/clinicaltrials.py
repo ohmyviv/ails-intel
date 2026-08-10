@@ -10,16 +10,26 @@ from ails_intel.models import CollectorOutcome, RawItem, SourceSpec
 from ails_intel.query_utils import ctgov_search_expression, local_relevance
 
 
+NONWORD = re.compile(r"[^a-z0-9]+", re.I)
 WS = re.compile(r"\s+")
 
 
 def _norm(value: object) -> str:
-    return WS.sub(" ", str(value or "").casefold()).strip()
+    return WS.sub(" ", NONWORD.sub(" ", str(value or "").casefold())).strip()
+
+
+def _term_matches(text_normalized: str, term: str) -> bool:
+    needle = _norm(term)
+    if not needle:
+        return False
+    if " " in needle:
+        return needle in text_normalized
+    return re.search(rf"\b{re.escape(needle)}\b", text_normalized) is not None
 
 
 def _contains_any(text: str, terms: list[str]) -> bool:
     hay = _norm(text)
-    return any(_norm(term) in hay for term in terms if _norm(term))
+    return any(_term_matches(hay, term) for term in terms)
 
 
 def _note_fields(notes: object) -> dict[str, str]:
