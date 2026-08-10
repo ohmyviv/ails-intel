@@ -12,6 +12,7 @@ from ails_intel.query_utils import ctgov_search_expression, local_relevance
 
 NONWORD = re.compile(r"[^a-z0-9]+", re.I)
 WS = re.compile(r"\s+")
+NON_EVENT_BASELINES = {"baseline_core", "first_seen_core"}
 
 
 def _norm(value: object) -> str:
@@ -261,7 +262,10 @@ class ClinicalTrialsCollector:
 
                 p1_threshold = int(self.gate.get("p1_threshold", core_threshold) or core_threshold)
                 p1_deltas = {str(x) for x in (self.gate.get("p1_deltas") or [])}
-                priority = "P1" if role_score >= p1_threshold or delta in p1_deltas else "P2"
+                if delta in NON_EVENT_BASELINES:
+                    priority = "P2"
+                else:
+                    priority = "P1" if role_score >= p1_threshold or delta in p1_deltas else "P2"
                 if priority == "P1":
                     p1_count += 1
                 else:

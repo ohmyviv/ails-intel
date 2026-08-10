@@ -51,7 +51,7 @@ def _study():
     }
 
 
-def test_pre_gate_history_emits_one_baseline_instead_of_guessing_unchanged():
+def test_pre_gate_history_emits_one_p2_baseline_instead_of_guessing_unchanged():
     prior = {
         "NCTLEGACY": {
             "raw_title": "Artificial intelligence diagnostic validation",
@@ -67,5 +67,6 @@ def test_pre_gate_history_emits_one_baseline_instead_of_guessing_unchanged():
         http=FakeHttp({"studies": [_study()]}),
     )
     assert len(out.relevant_items) == 1
+    assert out.relevant_items[0].priority_hint == "P2"
     assert "ctgov_delta=baseline_core" in out.relevant_items[0].notes
     assert "ctgov_material=" in out.relevant_items[0].notes
