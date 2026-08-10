@@ -65,6 +65,24 @@ class SheetsStore:
             and str(row.get("signal_state", "")).strip() == "active"
         ]
 
+    def latest_source_signals(self, source_id: str, *, exclude_run_key: str = "") -> dict[str, dict[str, object]]:
+        """Return the latest persisted Signal row for each stable_id of a source.
+
+        This is intentionally a read-only historical view used by deterministic
+        source adapters that need to distinguish a material state change from a
+        registry/article record merely appearing in today's update window.
+        """
+        out: dict[str, dict[str, object]] = {}
+        for row in self.dict_rows("Lite_Signals!A:AB"):
+            if str(row.get("source_id", "")).strip() != source_id:
+                continue
+            if exclude_run_key and str(row.get("run_key", "")).strip() == exclude_run_key:
+                continue
+            stable_id = str(row.get("stable_id", "")).strip()
+            if stable_id:
+                out[stable_id] = row
+        return out
+
     def coverage_rows(self, run_key: str) -> list[dict[str, object]]:
         return [
             row
