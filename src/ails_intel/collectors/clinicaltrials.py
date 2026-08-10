@@ -52,11 +52,6 @@ def _date_in_window(value: str, window: Window) -> bool:
     return window.start <= parsed <= window.end
 
 
-def _legacy_fingerprint(title: str, snippet: str) -> str:
-    payload = f"{_norm(title)}\n{_norm(snippet)}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def _material_state(study: dict[str, object]) -> dict[str, object]:
     protocol = study.get("protocolSection") or {}
     status = protocol.get("statusModule") or {}
@@ -144,8 +139,6 @@ class ClinicalTrialsCollector:
         self,
         *,
         nct: str,
-        title: str,
-        snippet: str,
         first_post: str,
         state: dict[str, object],
         fingerprint: str,
@@ -177,17 +170,12 @@ class ClinicalTrialsCollector:
                 return True, "enrollment_changed"
             return True, "protocol_material_updated"
 
-        # Bootstrap compatibility for pre-Sprint-4.3 history: old Signals did not
-        # carry structured material hashes. Exact title+stored-snippet equality is
-        # used only to suppress obvious administrative refreshes. A changed core
-        # description remains visible rather than being silently discarded.
-        prior_legacy = _legacy_fingerprint(
-            str(prior.get("raw_title", "")),
-            str(prior.get("raw_snippet", "")),
-        )
-        if prior_legacy == _legacy_fingerprint(title, snippet):
-            return False, "unchanged_legacy"
-        return True, "protocol_material_updated_legacy"
+        # Recall-safe bootstrap for pre-Sprint-4.3 history. Historical Signals did
+        # not persist structured material state, so title/summary equality cannot
+        # prove that status, enrollment, outcomes or other material fields stayed
+        # unchanged. Emit one baseline Signal to establish the canonical material
+        # fingerprint; only later runs may suppress an exact unchanged fingerprint.
+        return True, "baseline_core"
 
     def collect(self, *, source: SourceSpec, window: Window, max_results: int, http) -> CollectorOutcome:
         term = ctgov_search_expression(source.query_template, window.start.isoformat(), window.end.isoformat())
@@ -262,8 +250,6 @@ class ClinicalTrialsCollector:
                 material_hash = _material_fingerprint(material_state)
                 keep, delta = self._material_delta(
                     nct=nct,
-                    title=title,
-                    snippet=snippet,
                     first_post=first_post,
                     state=material_state,
                     fingerprint=material_hash,
