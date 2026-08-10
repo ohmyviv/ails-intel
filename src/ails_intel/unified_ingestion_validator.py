@@ -13,7 +13,9 @@ from ails_intel.state.sheets import SheetsStore
 from ails_intel.unified_ingestion import (
     WORKER_PRODUCERS,
     compact_manifest_hash,
+    enabled_structured_collector_ids,
     required_worker_routes,
+    validate_structured_snapshot_barrier,
     validate_unified_ingestion_snapshot,
 )
 
@@ -36,6 +38,14 @@ def _run_key(cfg: dict[str, object], report_date: str) -> str:
     minute = int(float(cfg.get("report_cutoff_minute_bjt", 30)))
     prefix = str(cfg.get("shadow_run_prefix", "AILS11S"))
     return f"{prefix}-{token}-{hour:02d}{minute:02d}-BJT"
+
+
+def _enabled(value: object, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 def main() -> None:
@@ -80,6 +90,7 @@ def main() -> None:
         )
         raise SystemExit(1)
 
+    run = matching_runs[0]
     entity_rows = store.dict_rows("Entities!A:V")
     required = required_worker_routes(cfg, entity_rows)
     active_signals = store.active_signals(run_key)
@@ -87,7 +98,7 @@ def main() -> None:
     coverage = store.coverage_rows(run_key)
 
     try:
-        channel_health = json.loads(str(matching_runs[0].get("channel_health_json", "") or "{}"))
+        channel_health = json.loads(str(run.get("channel_health_json", "") or "{}"))
     except json.JSONDecodeError:
         channel_health = {}
 
@@ -100,6 +111,21 @@ def main() -> None:
         required_routes=required,
         channel_health=channel_health,
     )
+
+    if _enabled(cfg.get("collector_snapshot_barrier_enabled"), default=True):
+        errors.extend(
+            validate_structured_snapshot_barrier(
+                run_key=run_key,
+                report_date=report_date,
+                coverage_rows=coverage,
+                expected_collector_ids=enabled_structured_collector_ids(cfg),
+                not_before_bjt=cfg.get("collector_snapshot_not_before_bjt", "18:00:00"),
+                current_active_signal_count=len(active_signals),
+                declared_signal_count=run.get("signal_count"),
+            )
+        )
+        errors = sorted(set(errors))
+
     worker_signal_count = sum(
         1
         for row in active_signals
