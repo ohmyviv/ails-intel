@@ -1,7 +1,9 @@
 from ails_intel.unified_ingestion import (
     build_worker_coverage,
     build_worker_signal,
+    enabled_structured_collector_ids,
     required_worker_routes,
+    validate_structured_snapshot_barrier,
     validate_unified_ingestion_snapshot,
 )
 
@@ -87,3 +89,69 @@ def test_complete_channel_cannot_hide_missing_route():
         channel_health={"C1": "complete"},
     )
     assert "required_route_missing:C1" in errors
+
+
+def test_enabled_structured_collectors_are_config_driven():
+    cfg = {
+        "structured_collectors_json": [
+            {"id": "COL-A", "enabled": True},
+            {"id": "COL-B", "enabled": False},
+            {"id": "COL-C"},
+        ]
+    }
+    assert enabled_structured_collector_ids(cfg) == {"COL-A", "COL-C"}
+
+
+def _collector_coverage(collector_id, checked_at, status="complete"):
+    return {
+        "run_key": RUN,
+        "producer_id": f"collector/{collector_id}",
+        "checked_at_bjt": checked_at,
+        "execution_status": status,
+    }
+
+
+def test_structured_snapshot_barrier_accepts_fresh_partial_collector():
+    coverage = [
+        _collector_coverage("COL-A", "2026-08-10T19:10:00+08:00", "complete"),
+        _collector_coverage("COL-B", "2026-08-10T19:12:00+08:00", "partial"),
+    ]
+    errors = validate_structured_snapshot_barrier(
+        run_key=RUN,
+        report_date="2026-08-10",
+        coverage_rows=coverage,
+        expected_collector_ids={"COL-A", "COL-B"},
+        not_before_bjt="18:00:00",
+        current_active_signal_count=10,
+        declared_signal_count=10,
+    )
+    assert errors == []
+
+
+def test_structured_snapshot_barrier_detects_missing_stale_and_drift():
+    coverage = [
+        _collector_coverage("COL-A", "2026-08-10T17:59:59+08:00", "complete"),
+    ]
+    errors = validate_structured_snapshot_barrier(
+        run_key=RUN,
+        report_date="2026-08-10",
+        coverage_rows=coverage,
+        expected_collector_ids={"COL-A", "COL-B"},
+        not_before_bjt="18:00:00",
+        current_active_signal_count=12,
+        declared_signal_count=10,
+    )
+    assert "structured_snapshot_stale_collector" in errors
+    assert "structured_snapshot_missing_collector" in errors
+    assert "signal_count_snapshot_drift" in errors
+
+
+def test_structured_snapshot_barrier_rejects_failed_collector():
+    errors = validate_structured_snapshot_barrier(
+        run_key=RUN,
+        report_date="2026-08-10",
+        coverage_rows=[_collector_coverage("COL-A", "2026-08-10T19:00:00+08:00", "failed")],
+        expected_collector_ids={"COL-A"},
+        not_before_bjt="18:00",
+    )
+    assert errors == ["structured_snapshot_unready_collector"]

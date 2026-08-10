@@ -43,10 +43,26 @@ A route with a hit must have at least one active worker Signal on that same atte
 
 ## Deterministic news sensors
 
-The collector runtime now supports generic RSS adapters configured entirely through private `structured_collectors_json` options. Feed URLs and relevance expressions are runtime configuration, not hard-coded collector behavior. This lets selected stable open feeds join the same deterministic Signal layer without turning dynamic/paywalled media into brittle public scrapers.
+The collector runtime supports generic RSS adapters configured entirely through private `structured_collectors_json` options. Feed URLs and relevance expressions are runtime configuration, not hard-coded collector behavior. This lets selected stable open feeds join the same deterministic Signal layer without turning dynamic/paywalled media into brittle public scrapers.
+
+## Sprint 4.2 — Collector snapshot barrier
+
+GitHub cron time is a scheduling target, not a transaction boundary. A scheduled collector can start late enough to overlap the reasoning worker. The Worker must therefore never assume that the expected cron time means the structured snapshot is final.
+
+The snapshot barrier requires:
+
+- every enabled structured collector has exactly one same-run `Lite_SourceCoverage` row;
+- its persisted `checked_at_bjt` is on the report date and not earlier than the configured barrier time;
+- a collector may be `complete` or `partial` at the barrier, while `failed`, `skipped`, missing, or stale rows are not safe inputs;
+- the reasoning worker freshly re-reads active Signals after the barrier, rather than reusing state read at task startup or during the production phase;
+- a post-run validator compares the run's declared `signal_count` with the current active same-run Signal count and reports `signal_count_snapshot_drift` when new Signals appeared after the consumed snapshot.
+
+The scheduled collector target is moved earlier to provide operational margin, but the barrier remains authoritative. Moving cron earlier is not considered a correctness mechanism by itself.
+
+If drift is detected before Freeze, the Worker must refresh discovery/Candidate formation. If drift is detected after Freeze, frozen content must not be silently rewritten; the Shadow attempt must remain non-passed until the discrepancy is handled according to the state machine.
 
 ## Validation
 
 `Unified Signal Ingestion Validation` performs public-safe checks only. It reports aggregate counts, a hash of the required route manifest, and compact error labels. It does not log private queries, raw titles, snippets, entity names, Candidate content, or report bodies.
 
-The validator is intentionally stricter than the Sprint 3 transaction validators: a previously passed Shadow run can fail this new contract if its news/entity routes were not persisted at route level. This is expected for pre-Sprint-4 history and is not a reason to rewrite historical rows.
+The validator is intentionally stricter than the Sprint 3 transaction validators: a previously passed Shadow run can fail this contract if its news/entity routes were not persisted at route level or if its structured Signal snapshot drifted after reasoning. This is expected for diagnostic Shadow history and is not a reason to rewrite historical rows.

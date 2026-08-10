@@ -2,9 +2,10 @@ name: Structured Collectors
 
 on:
   schedule:
-    # 19:47 Asia/Shanghai = 11:47 UTC. Initial Sprint 2 cadence is one
-    # final pre-worker collection per day; intraday incrementals come later.
-    - cron: "47 11 * * *"
+    # 18:47 Asia/Shanghai = 10:47 UTC. The earlier target gives the reasoning
+    # worker operational margin for GitHub schedule jitter; the persisted
+    # snapshot barrier remains the source of truth and does not trust cron time.
+    - cron: "47 10 * * *"
   workflow_dispatch:
     inputs:
       collector:
