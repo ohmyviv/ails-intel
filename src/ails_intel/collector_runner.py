@@ -19,14 +19,7 @@ from ails_intel.safe_logger import log_event
 from ails_intel.signal_keys import make_coverage_id, make_signal_id, make_signal_key
 from ails_intel.state.sheets import SheetsStore
 
-FIXED_COLLECTORS = {
-    "COL-PUBMED": lambda spec: PubMedCollector(),
-    "COL-ARXIV": lambda spec: ArxivCollector(),
-    "COL-BIORXIV": lambda spec: BiorxivCollector("biorxiv"),
-    "COL-MEDRXIV": lambda spec: BiorxivCollector("medrxiv"),
-    "COL-CTGOV": lambda spec: ClinicalTrialsCollector(),
-}
-
+FIXED_COLLECTOR_IDS = {"COL-PUBMED", "COL-ARXIV", "COL-BIORXIV", "COL-MEDRXIV", "COL-CTGOV"}
 DIAGNOSTIC_INVALIDATION_NOTE = "diagnostic_first_run_pre_sprint2.1"
 
 
@@ -39,12 +32,22 @@ def _is_rss_spec(spec) -> bool:
 
 
 def _collector_supported(spec) -> bool:
-    return spec.collector_id in FIXED_COLLECTORS or _is_rss_spec(spec)
+    return spec.collector_id in FIXED_COLLECTOR_IDS or _is_rss_spec(spec)
 
 
-def _build_collector(spec):
-    if spec.collector_id in FIXED_COLLECTORS:
-        return FIXED_COLLECTORS[spec.collector_id](spec)
+def _build_collector(spec, *, prior_signals=None):
+    gate_options = spec.options.get("relevance_gate")
+    gate_options = dict(gate_options) if isinstance(gate_options, dict) else {}
+    if spec.collector_id == "COL-PUBMED":
+        return PubMedCollector(gate_options=gate_options)
+    if spec.collector_id == "COL-ARXIV":
+        return ArxivCollector()
+    if spec.collector_id == "COL-BIORXIV":
+        return BiorxivCollector("biorxiv")
+    if spec.collector_id == "COL-MEDRXIV":
+        return BiorxivCollector("medrxiv")
+    if spec.collector_id == "COL-CTGOV":
+        return ClinicalTrialsCollector(gate_options=gate_options, prior_signals=prior_signals or {})
     if _is_rss_spec(spec):
         return RssCollector(
             feed_url=str(spec.options.get("feed_url", "")),
@@ -56,7 +59,8 @@ def _build_collector(spec):
 def signal_priority_for_channel(channel_id: str) -> str:
     # SourceRegistry priority describes scan importance, not event severity.
     # Hard/clinical/product/regional discovery starts at P1; technical frontier
-    # starts at P2. The reasoning worker may promote a verified material event.
+    # starts at P2. Source-specific deterministic gates may demote a weaker C3
+    # record to P2 before the reasoning worker sees it.
     return "P2" if channel_id == "C5" else "P1"
 
 
@@ -84,6 +88,8 @@ def _signal(
     date_token,
 ):
     key = make_signal_key(source_id, item.stable_id, item.url, item.title, item.published_date)
+    priority = str(getattr(item, "priority_hint", "") or "").strip() or signal_priority_for_channel(channel_id)
+    notes = str(getattr(item, "notes", "") or "").strip()
     return key, SignalRecord({
         "signal_id": make_signal_id(date_token, key), "run_key": run_key,
         "collection_batch_id": batch_id, "producer_id": producer_id, "origin_attempt_id": "",
@@ -94,9 +100,9 @@ def _signal(
         "event_date_hint": item.event_date, "published_at_hint": item.published_date,
         "first_public_at_hint": item.first_public_at, "url": item.url, "stable_id": item.stable_id,
         "signal_key": key, "event_key_hint": "",
-        "priority_hint": signal_priority_for_channel(channel_id),
+        "priority_hint": priority,
         "ai_core_hint": "TRUE", "life_science_core_hint": "TRUE",
-        "signal_state": "active", "notes": "", "schema_version": "v11.0",
+        "signal_state": "active", "notes": notes, "schema_version": "v11.0",
     })
 
 
@@ -151,7 +157,10 @@ def main():
     total_duplicates = 0
     total_reactivated = 0
     for spec in specs:
-        collector = _build_collector(spec)
+        prior_signals = {}
+        if spec.collector_id == "COL-CTGOV":
+            prior_signals = store.latest_source_signals(spec.source_id, exclude_run_key=run_key)
+        collector = _build_collector(spec, prior_signals=prior_signals)
         source = sources[spec.source_id]
         max_results = int(limits.get(spec.collector_id, cfg["collector_default_max_results"].value))
         configured_days = spec.options.get("window_days", "")
@@ -184,8 +193,8 @@ def main():
         new_for_collector = []
         duplicates = 0
         reactivated = 0
-        priority = signal_priority_for_channel(spec.channel_id)
         for item in outcome.relevant_items:
+            effective_priority = str(getattr(item, "priority_hint", "") or "").strip() or signal_priority_for_channel(spec.channel_id)
             key, signal = _signal(
                 item, run_key=run_key, batch_id=batch_id, producer_id=producer_id,
                 channel_id=spec.channel_id, route_id=route_id, source_id=spec.source_id,
@@ -198,13 +207,13 @@ def main():
                 continue
             if action == "reactivate":
                 row_idx = int(record["row"])
-                reactivation_updates.append((row_idx, priority))
+                reactivation_updates.append((row_idx, effective_priority))
                 record["state"] = "active"
                 record["notes"] = "revalidated_after_sprint2.1"
                 reactivated += 1
                 continue
 
-            existing_records[key] = {"row": 0, "state": "active", "notes": ""}
+            existing_records[key] = {"row": 0, "state": "active", "notes": str(getattr(item, "notes", "") or "")}
             new_for_collector.append(signal)
 
         all_new.extend(new_for_collector)
