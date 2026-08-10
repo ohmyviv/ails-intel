@@ -70,7 +70,7 @@ ClinicalTrials.gov applies two distinct gates:
 - an AI-role gate determines whether AI/ML is actually part of the study intervention, validation target, clinical workflow, endpoint, or other material study role rather than a background mention;
 - a material-delta gate fingerprints clinically meaningful registry fields so an administrative refresh does not automatically become a new active Signal.
 
-Material fingerprints cover study status, enrollment, design, interventions, primary/secondary outcomes, key study dates, sponsor and results availability. Future matching fingerprints are suppressed as unchanged. Historical pre-Sprint-4.3 Signals are handled conservatively with a title+stored-snippet compatibility check so obvious unchanged legacy refreshes can be filtered without rewriting history.
+Material fingerprints cover study status, enrollment, design, interventions, primary/secondary outcomes, key study dates, sponsor and results availability. Future matching fingerprints are suppressed as unchanged. Historical pre-Sprint-4.3 Signals do not contain enough structured state to prove that a current registry refresh is non-material, so the first post-gate encounter emits one `baseline_core` Signal and stores the canonical material fingerprint. Exact unchanged suppression begins only after that baseline exists. This deliberately accepts one bounded bootstrap day of extra volume rather than risking a false negative from title/summary equality.
 
 ClinicalTrials.gov may also assign P1/P2 at ingestion according to the private AI-role threshold and material delta class; this prevents every locally relevant registry record from automatically entering the reasoning layer as P1.
 
