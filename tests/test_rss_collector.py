@@ -11,6 +11,28 @@ RSS = """<?xml version='1.0'?>
   <item><title>Old AI funding</title><link>https://example.com/c</link><guid>c</guid><pubDate>Thu, 30 Jul 2026 08:00:00 GMT</pubDate><description>AI funding.</description></item>
 </channel></rss>"""
 
+ATOM = """<?xml version='1.0' encoding='utf-8'?>
+<feed xmlns='http://www.w3.org/2005/Atom'>
+  <entry>
+    <title>AI-guided protein design reaches experimental validation</title>
+    <id>tag:example.com,2026:ai-protein</id>
+    <link rel='alternate' href='https://example.com/ai-protein'/>
+    <updated>2026-08-10T12:30:00Z</updated>
+    <summary>Researchers report an AI protein-design system with experimental validation.</summary>
+  </entry>
+</feed>"""
+
+NAMESPACED_RSS = """<?xml version='1.0'?>
+<rss xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:content='http://purl.org/rss/1.0/modules/content/'><channel>
+  <item>
+    <title>Hospital deploys ambient AI across clinical workflow</title>
+    <link>https://example.com/deployment</link>
+    <guid>deployment-1</guid>
+    <dc:date>2026-08-10T09:15:00Z</dc:date>
+    <content:encoded><![CDATA[Health system deploys ambient AI documentation across hospitals.]]></content:encoded>
+  </item>
+</channel></rss>"""
+
 STALE_RSS = """<?xml version='1.0'?>
 <rss><channel>
   <item><title>AI drug discovery partnership</title><link>https://example.com/old</link><guid>old</guid><pubDate>Thu, 30 Jul 2026 08:00:00 GMT</pubDate><description>AI funding partnership.</description></item>
@@ -31,6 +53,23 @@ def test_parse_feed_extracts_stable_dated_items():
     items = parse_feed(RSS)
     assert [x.stable_id for x in items] == ["a", "b", "c"]
     assert items[0].published_date == "2026-08-10"
+
+
+def test_parse_feed_supports_atom_topic_feeds():
+    items = parse_feed(ATOM)
+    assert len(items) == 1
+    assert items[0].stable_id == "tag:example.com,2026:ai-protein"
+    assert items[0].url == "https://example.com/ai-protein"
+    assert items[0].published_date == "2026-08-10"
+    assert "experimental validation" in items[0].snippet
+
+
+def test_parse_feed_supports_namespaced_rss_topic_feeds():
+    items = parse_feed(NAMESPACED_RSS)
+    assert len(items) == 1
+    assert items[0].stable_id == "deployment-1"
+    assert items[0].published_date == "2026-08-10"
+    assert "ambient AI documentation" in items[0].snippet
 
 
 def test_rss_collector_filters_window_and_private_relevance_query():
