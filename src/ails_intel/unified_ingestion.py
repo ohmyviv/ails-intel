@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping
+from datetime import datetime, time
 
 from ails_intel.models import CoverageRecord, SignalRecord
 from ails_intel.signal_keys import make_coverage_id, make_signal_id, make_signal_key
@@ -19,6 +20,112 @@ def _date_token(run_key: str) -> str:
 
 def default_worker_priority(channel_id: str) -> str:
     return "P2" if channel_id == "C5" else "P1"
+
+
+def enabled_structured_collector_ids(cfg: Mapping[str, object]) -> set[str]:
+    """Return the enabled deterministic collector IDs from private config.
+
+    The public contract intentionally consumes opaque collector IDs only. Source
+    locators, queries, and other private configuration remain in the Sheet.
+    """
+    out: set[str] = set()
+    raw = cfg.get("structured_collectors_json", []) or []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        collector_id = str(item.get("id", "")).strip()
+        enabled = item.get("enabled", True)
+        if collector_id and enabled not in {False, "FALSE", "false", 0, "0"}:
+            out.add(collector_id)
+    return out
+
+
+def _parse_clock(value: object) -> time:
+    text = str(value or "18:00:00").strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    raise ValueError("invalid snapshot barrier clock")
+
+
+def validate_structured_snapshot_barrier(
+    *,
+    run_key: str,
+    report_date: str,
+    coverage_rows: Iterable[Mapping[str, object]],
+    expected_collector_ids: Iterable[str],
+    not_before_bjt: object = "18:00:00",
+    current_active_signal_count: int | None = None,
+    declared_signal_count: object | None = None,
+) -> list[str]:
+    """Validate that reasoning consumed a fresh, complete collector snapshot.
+
+    GitHub scheduled jobs can start materially later than their cron time. The
+    barrier therefore relies on persisted collector coverage timestamps rather
+    than assuming the scheduler fired on time. Partial collector outcomes are
+    allowed here and are handled by Coverage Gate; missing, failed, skipped, or
+    stale collector rows are not safe inputs for Candidate formation.
+
+    A post-run validator can also compare the run's declared signal_count with
+    the current active same-run signal count. Because Signals are append-mostly,
+    a mismatch is a strong indication that the reasoning snapshot changed after
+    it was consumed/frozen.
+    """
+    errors: list[str] = []
+    expected = {str(x).strip() for x in expected_collector_ids if str(x).strip()}
+    try:
+        minimum_clock = _parse_clock(not_before_bjt)
+    except ValueError:
+        return ["structured_snapshot_invalid_barrier_clock"]
+
+    structured_rows = [
+        row
+        for row in coverage_rows
+        if str(row.get("run_key", "")).strip() == run_key
+        and str(row.get("producer_id", "")).strip().startswith("collector/")
+    ]
+    by_collector: dict[str, list[Mapping[str, object]]] = {}
+    for row in structured_rows:
+        producer = str(row.get("producer_id", "")).strip()
+        collector_id = producer.removeprefix("collector/")
+        if collector_id:
+            by_collector.setdefault(collector_id, []).append(row)
+
+    for collector_id in sorted(expected):
+        matches = by_collector.get(collector_id, [])
+        if not matches:
+            errors.append("structured_snapshot_missing_collector")
+            continue
+        if len(matches) != 1:
+            errors.append("structured_snapshot_duplicate_collector")
+        row = matches[-1]
+        status = str(row.get("execution_status", "")).strip()
+        if status in {"failed", "skipped", ""}:
+            errors.append("structured_snapshot_unready_collector")
+
+        checked_raw = str(row.get("checked_at_bjt", "")).strip()
+        try:
+            checked = datetime.fromisoformat(checked_raw)
+        except ValueError:
+            errors.append("structured_snapshot_invalid_checked_at")
+            continue
+        if checked.date().isoformat() != report_date or checked.time().replace(tzinfo=None) < minimum_clock:
+            errors.append("structured_snapshot_stale_collector")
+
+    if current_active_signal_count is not None and declared_signal_count is not None:
+        try:
+            declared = int(float(str(declared_signal_count or "0")))
+        except ValueError:
+            errors.append("structured_snapshot_invalid_declared_signal_count")
+        else:
+            if declared != int(current_active_signal_count):
+                errors.append("signal_count_snapshot_drift")
+
+    return sorted(set(errors))
 
 
 def build_worker_signal(
