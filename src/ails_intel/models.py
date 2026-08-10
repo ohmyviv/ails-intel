@@ -69,3 +69,4 @@ class CollectorOutcome:
     relevant_items: list[RawItem] = field(default_factory=list)
     representative_url: str = ""
     failure_reason: str = ""
+    diagnostic_note: str = ""
