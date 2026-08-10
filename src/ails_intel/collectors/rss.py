@@ -90,6 +90,13 @@ def parse_feed(xml_text: str) -> list[RawItem]:
     return out
 
 
+def _diagnostic_note(items: list[RawItem]) -> str:
+    if not items:
+        return "parsed_count=0;latest_published_date="
+    latest = max(item.published_date for item in items)
+    return f"parsed_count={len(items)};latest_published_date={latest}"
+
+
 class RssCollector:
     def __init__(self, feed_url: str, relevance_query: str = ""):
         if not str(feed_url).strip():
@@ -99,11 +106,44 @@ class RssCollector:
 
     def collect(self, *, source: SourceSpec, window: Window, max_results: int, http) -> CollectorOutcome:
         items = parse_feed(http.text(self.feed_url))
+        diagnostic = _diagnostic_note(items)
+        if not items:
+            return CollectorOutcome(
+                collector_id="rss",
+                source_id=source.source_id,
+                channel_id="",
+                execution_status="partial",
+                saturation_status="clear",
+                results_seen=0,
+                relevant_items=[],
+                representative_url="",
+                failure_reason="empty_feed",
+                diagnostic_note=diagnostic,
+            )
+
+        start = window.start.isoformat()
+        end = window.end.isoformat()
         in_window = [
             item
             for item in items
-            if window.start.isoformat() <= item.published_date <= window.end.isoformat()
+            if start <= item.published_date <= end
         ]
+        if not in_window:
+            latest = max(item.published_date for item in items)
+            reason = "stale_feed" if latest < start else "date_window_empty"
+            return CollectorOutcome(
+                collector_id="rss",
+                source_id=source.source_id,
+                channel_id="",
+                execution_status="partial",
+                saturation_status="clear",
+                results_seen=0,
+                relevant_items=[],
+                representative_url="",
+                failure_reason=reason,
+                diagnostic_note=diagnostic,
+            )
+
         query = self.relevance_query or source.query_template
         relevant = [
             item
@@ -123,4 +163,5 @@ class RssCollector:
             relevant_items=selected,
             representative_url=selected[0].url if selected else "",
             failure_reason="",
+            diagnostic_note=diagnostic,
         )
