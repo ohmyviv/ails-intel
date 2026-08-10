@@ -9,11 +9,11 @@ from zoneinfo import ZoneInfo
 from ails_intel.auth import build_sheets_service, spreadsheet_id_from_env
 from ails_intel.runtime import load_active_config
 from ails_intel.safe_logger import log_event
+from ails_intel.snapshot_policy import barrier_required_structured_collector_ids
 from ails_intel.state.sheets import SheetsStore
 from ails_intel.unified_ingestion import (
     WORKER_PRODUCERS,
     compact_manifest_hash,
-    enabled_structured_collector_ids,
     required_worker_routes,
     validate_structured_snapshot_barrier,
     validate_unified_ingestion_snapshot,
@@ -118,7 +118,7 @@ def main() -> None:
                 run_key=run_key,
                 report_date=report_date,
                 coverage_rows=coverage,
-                expected_collector_ids=enabled_structured_collector_ids(cfg),
+                expected_collector_ids=barrier_required_structured_collector_ids(cfg),
                 not_before_bjt=cfg.get("collector_snapshot_not_before_bjt", "18:00:00"),
                 current_active_signal_count=len(active_signals),
                 declared_signal_count=run.get("signal_count"),
