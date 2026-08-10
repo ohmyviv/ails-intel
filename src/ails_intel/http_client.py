@@ -23,7 +23,7 @@ class HttpClient:
                     url,
                     headers={
                         "User-Agent": self.user_agent,
-                        "Accept": "application/json, application/atom+xml, application/xml, text/xml, */*",
+                        "Accept": "application/json, application/atom+xml, application/rss+xml, application/xml, text/xml, */*",
                     },
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout) as response:
