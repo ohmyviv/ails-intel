@@ -45,6 +45,8 @@ class RawItem:
     event_date: str = ""
     snippet: str = ""
     first_public_at: str = ""
+    priority_hint: str = ""
+    notes: str = ""
 
 @dataclass
 class SignalRecord:

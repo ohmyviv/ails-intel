@@ -61,6 +61,25 @@ The scheduled collector target is moved earlier to provide operational margin, b
 
 If drift is detected before Freeze, the Worker must refresh discovery/Candidate formation. If drift is detected after Freeze, frozen content must not be silently rewritten; the Shadow attempt must remain non-passed until the discrepancy is handled according to the state machine.
 
+## Sprint 4.3 — Structured relevance precision
+
+High-recall retrieval is preserved. Precision is improved after retrieval with source-specific deterministic gates configured through private collector options.
+
+ClinicalTrials.gov applies two distinct gates:
+
+- an AI-role gate determines whether AI/ML is actually part of the study intervention, validation target, clinical workflow, endpoint, or other material study role rather than a background mention;
+- a material-delta gate fingerprints clinically meaningful registry fields so an administrative refresh does not automatically become a new active Signal.
+
+Material fingerprints cover study status, enrollment, design, interventions, primary/secondary outcomes, key study dates, sponsor and results availability. Future matching fingerprints are suppressed as unchanged. Historical pre-Sprint-4.3 Signals are handled conservatively with a title+stored-snippet compatibility check so obvious unchanged legacy refreshes can be filtered without rewriting history.
+
+ClinicalTrials.gov may also assign P1/P2 at ingestion according to the private AI-role threshold and material delta class; this prevents every locally relevant registry record from automatically entering the reasoning layer as P1.
+
+PubMed keeps the EDAT high-recall search but applies a publication-type/original-contribution gate after EFetch. Private configuration identifies excluded publication types and acceptable evidence of an original contribution. Reviews, perspectives and other non-original records can therefore be counted in retrieval diagnostics without becoming active technical Signals.
+
+Collector Coverage keeps the distinction between `results_seen` and `relevant_signal_count` and now records compact filter diagnostics such as local-filter, non-core, unchanged-material, publication-type and non-original counts. This preserves auditability: a missed item can later be attributed to retrieval or to a deterministic relevance gate.
+
+Exact operational vocabularies and thresholds remain private runtime configuration and are not committed to the public repository.
+
 ## Validation
 
 `Unified Signal Ingestion Validation` performs public-safe checks only. It reports aggregate counts, a hash of the required route manifest, and compact error labels. It does not log private queries, raw titles, snippets, entity names, Candidate content, or report bodies.
