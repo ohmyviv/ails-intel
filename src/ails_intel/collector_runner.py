@@ -217,7 +217,7 @@ def main():
             "source_group": "structured", "route": route_kind, "status": _legacy_status(outcome.execution_status),
             "hit_count": hit_count, "representative_url": outcome.representative_url,
             "failure_reason": outcome.failure_reason, "checked_at_bjt": checked_at,
-            "fallback_used": "FALSE", "notes": "", "retrieval_status": outcome.execution_status,
+            "fallback_used": "FALSE", "notes": outcome.diagnostic_note, "retrieval_status": outcome.execution_status,
             "hit_status": "hit" if hit_count else "no_hit",
             "coverage_id": make_coverage_id(run_key, producer_id, "", spec.channel_id, route_id, spec.source_id),
             "attempt_id": "", "producer_id": producer_id, "channel_id": spec.channel_id, "route_id": route_id,
