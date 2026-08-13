@@ -322,11 +322,11 @@ def run_migration(migration_id: str, *, apply: bool) -> list[str]:
     log_event(
         "sheet_migration",
         component="migrations",
+        stage=migration_id,
         status="PASS" if not errors else "FAIL",
-        migration_id=migration_id,
-        apply=apply,
-        sheet_action_count=len(sheet_actions),
-        changed_config_count=len(changed),
+        execution_status="apply" if apply else "preview",
+        check_count=len(sheet_actions),
+        candidate_count=len(changed),
         error_count=len(errors),
     )
     return errors
