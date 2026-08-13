@@ -7,7 +7,13 @@ from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from ails_intel.auth import build_sheets_service, spreadsheet_id_from_env
-from ails_intel.challenger_audit import CHALLENGER_HEADERS
+from ails_intel.challenger_audit import (
+    CHALLENGER_DISPOSITIONS,
+    CHALLENGER_HEADERS,
+    MISS_SEVERITIES,
+    MISS_TYPES,
+    PRIMARY_SOURCE_STATUSES,
+)
 from ails_intel.safe_logger import log_event
 
 BJT = ZoneInfo("Asia/Shanghai")
@@ -56,26 +62,10 @@ def sprint_4_6_a1() -> MigrationSpec:
                 headers=tuple(CHALLENGER_HEADERS),
                 row_count=3000,
                 validations=(
-                    ValidationRule(
-                        disposition_col,
-                        (
-                            "confirmed_miss",
-                            "stale_resurfacing",
-                            "duplicate_known_event",
-                            "scope_mismatch",
-                            "evidence_insufficient",
-                            "false_or_inaccurate_claim",
-                        ),
-                    ),
-                    ValidationRule(
-                        miss_type_col,
-                        ("discovery_miss", "verification_miss", "selection_miss", "timing_miss"),
-                    ),
-                    ValidationRule(severity_col, ("critical", "material", "minor")),
-                    ValidationRule(
-                        primary_status_col,
-                        ("verified", "unverified", "not_found", "not_required"),
-                    ),
+                    ValidationRule(disposition_col, tuple(sorted(CHALLENGER_DISPOSITIONS))),
+                    ValidationRule(miss_type_col, tuple(sorted(MISS_TYPES))),
+                    ValidationRule(severity_col, tuple(sorted(MISS_SEVERITIES))),
+                    ValidationRule(primary_status_col, tuple(sorted(PRIMARY_SOURCE_STATUSES))),
                 ),
             ),
         ),
@@ -87,14 +77,20 @@ def sprint_4_6_a1() -> MigrationSpec:
                 "Sprint 4.6 external challenger audit lane; audit-only and never a direct Candidate ingress",
             ),
             ConfigUpsert(
+                "challenger_audit_blocking",
+                "FALSE",
+                "bool",
+                "Sprint 4.6 probation mode: challenger findings do not block report delivery",
+            ),
+            ConfigUpsert(
                 "challenger_disposition_enum",
-                "confirmed_miss|stale_resurfacing|duplicate_known_event|scope_mismatch|evidence_insufficient|false_or_inaccurate_claim",
+                "|".join(sorted(CHALLENGER_DISPOSITIONS)),
                 "enum",
                 "Sprint 4.6 challenger terminal disposition taxonomy",
             ),
             ConfigUpsert(
                 "challenger_primary_source_status_enum",
-                "verified|unverified|not_found|not_required",
+                "|".join(sorted(PRIMARY_SOURCE_STATUSES)),
                 "enum",
                 "Sprint 4.6 primary-source verification state",
             ),
@@ -169,7 +165,7 @@ def _ensure_sheet(service, spreadsheet_id: str, spec: SheetSpec, *, apply: bool)
                     {
                         "updateSheetProperties": {
                             "properties": {"sheetId": props["sheetId"], "gridProperties": resize},
-                            "fields": ",".join(f"gridProperties.{k}" for k in resize),
+                            "fields": ",".join(f"gridProperties.{key}" for key in resize),
                         }
                     }
                 ]
@@ -244,8 +240,8 @@ def _upsert_config(
 
     now = datetime.now(BJT).isoformat(timespec="seconds")
     changed: list[str] = []
-    appends: list[list[object]] = []
-    updates: list[dict] = []
+    writes: list[dict] = []
+    next_row = len(rows) + 1
     for item in upserts:
         desired = [item.key, item.value, item.value_type, "TRUE", item.notes, now, item.owner]
         row_index = by_key.get(item.key)
@@ -255,24 +251,17 @@ def _upsert_config(
             stable_desired = [str(desired[i]) for i in (0, 1, 2, 3, 4, 6)]
             if stable_current == stable_desired:
                 continue
-            updates.append({"range": f"Lite_Config!A{row_index}:G{row_index}", "values": [desired]})
         else:
-            appends.append(desired)
+            row_index = next_row
+            next_row += 1
+        writes.append({"range": f"Lite_Config!A{row_index}:G{row_index}", "values": [desired]})
         changed.append(item.key)
 
-    if apply and updates:
+    if apply and writes:
         service.spreadsheets().values().batchUpdate(
             spreadsheetId=spreadsheet_id,
-            body={"valueInputOption": "RAW", "data": updates},
+            body={"valueInputOption": "RAW", "data": writes},
         ).execute(num_retries=3)
-    if apply and appends:
-        service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range="Lite_Config!A:G",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": appends},
-        ).execute(num_retries=0)
     return changed
 
 
@@ -280,9 +269,17 @@ def validate_migration(service, spreadsheet_id: str, spec: MigrationSpec) -> lis
     errors: list[str] = []
     sheets = _sheet_map(service, spreadsheet_id)
     for sheet in spec.sheets:
-        if sheet.title not in sheets:
+        props = sheets.get(sheet.title)
+        if not props:
             errors.append(f"missing_sheet:{sheet.title}")
             continue
+        grid = props.get("gridProperties", {})
+        if int(grid.get("rowCount", 0)) < sheet.row_count:
+            errors.append(f"grid_too_small:{sheet.title}:rowCount")
+        if int(grid.get("columnCount", 0)) < len(sheet.headers):
+            errors.append(f"grid_too_small:{sheet.title}:columnCount")
+        if int(grid.get("frozenRowCount", 0)) < 1:
+            errors.append(f"grid_not_frozen:{sheet.title}")
         rows = _rows(service, spreadsheet_id, f"{sheet.title}!1:1")
         actual = [str(x) for x in (rows[0] if rows else [])]
         if actual != list(sheet.headers):
@@ -296,7 +293,13 @@ def validate_migration(service, spreadsheet_id: str, spec: MigrationSpec) -> lis
             errors.append(f"missing_config:{item.key}")
             continue
         padded = list(row) + [""] * 7
-        if str(padded[1]) != item.value or str(padded[2]) != item.value_type or str(padded[3]).upper() != "TRUE":
+        if (
+            str(padded[1]) != item.value
+            or str(padded[2]) != item.value_type
+            or str(padded[3]).upper() != "TRUE"
+            or str(padded[4]) != item.notes
+            or str(padded[6]) != item.owner
+        ):
             errors.append(f"config_mismatch:{item.key}")
     return sorted(set(errors))
 
@@ -309,8 +312,10 @@ def run_migration(migration_id: str, *, apply: bool) -> list[str]:
     service = build_sheets_service()
     spreadsheet_id = spreadsheet_id_from_env()
 
-    for sheet in spec.sheets:
+    sheet_actions = [
         _ensure_sheet(service, spreadsheet_id, sheet, apply=apply)
+        for sheet in spec.sheets
+    ]
     changed = _upsert_config(service, spreadsheet_id, spec.config_upserts, apply=apply)
 
     errors = validate_migration(service, spreadsheet_id, spec) if apply else []
@@ -320,6 +325,7 @@ def run_migration(migration_id: str, *, apply: bool) -> list[str]:
         status="PASS" if not errors else "FAIL",
         migration_id=migration_id,
         apply=apply,
+        sheet_action_count=len(sheet_actions),
         changed_config_count=len(changed),
         error_count=len(errors),
     )
