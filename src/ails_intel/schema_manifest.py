@@ -58,10 +58,19 @@ EXPECTED_HEADERS = {
         "first_public_at_hint","url","stable_id","signal_key","event_key_hint","priority_hint",
         "ai_core_hint","life_science_core_hint","signal_state","notes","schema_version"
     ],
+    "Lite_ChallengerAudit": [
+        "challenger_id","report_date","run_key","audit_attempt_id","provider_id","received_at_bjt",
+        "raw_title","raw_url","raw_summary","claimed_source_published_at","claimed_event_date",
+        "entity_hint","event_type_hint","content_class_hint","matched_signal_ids","matched_candidate_ids",
+        "matched_event_key","disposition","miss_type","miss_severity","primary_source_status",
+        "canonical_primary_url","source_published_at","first_public_at","event_date","audited_at_bjt",
+        "notes","schema_version"
+    ],
 }
 
 MIN_GRID = {
     "Lite_Signals": {"rowCount": 5000, "columnCount": 28, "frozenRowCount": 1},
+    "Lite_ChallengerAudit": {"rowCount": 3000, "columnCount": 28, "frozenRowCount": 1},
 }
 
 REQUIRED_V11_CONFIG = {
@@ -91,6 +100,8 @@ REQUIRED_V11_CONFIG = {
     "shadow_audit_weekly_day","shadow_audit_window_days","shadow_audit_budget_pct",
     "miss_type_enum","miss_severity_enum","fingerprint_algorithm",
     "frozen_fingerprint_fields_v11","readback_contract_v11",
+    "challenger_audit_enabled","challenger_audit_blocking","challenger_disposition_enum",
+    "challenger_primary_source_status_enum","challenger_schema_version",
 }
 
 VALIDATION_PROBES = {
@@ -112,4 +123,11 @@ VALIDATION_PROBES = {
     "Lite_EventIndex!Z2": {"reported","watching","closed","superseded"},
     "Lite_SourceCoverage!T2": {"complete","partial","failed","skipped"},
     "Lite_SourceCoverage!U2": {"clear","saturated","unknown"},
+    "Lite_ChallengerAudit!R2": {
+        "confirmed_miss","stale_resurfacing","duplicate_known_event","scope_mismatch",
+        "evidence_insufficient","false_or_inaccurate_claim"
+    },
+    "Lite_ChallengerAudit!S2": {"discovery_miss","verification_miss","selection_miss","timing_miss"},
+    "Lite_ChallengerAudit!T2": {"critical","material","minor"},
+    "Lite_ChallengerAudit!U2": {"verified","unverified","not_found","not_required"},
 }
