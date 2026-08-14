@@ -1,5 +1,5 @@
 {
   "request_version": "v1",
   "migration": "sprint_4_6_b1",
-  "apply": false
+  "apply": true
 }
