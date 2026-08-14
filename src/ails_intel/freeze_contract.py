@@ -30,7 +30,8 @@ def validate_shadow_freeze_snapshot(
 
     A valid snapshot is committed to Shadow DailyItems with a reproducible
     fingerprint, but remains non-canonical, undelivered, and must not write the
-    formal EventIndex.
+    formal EventIndex. Coverage confidence is carried as metadata and does not
+    itself invalidate an otherwise coherent frozen manifest.
     """
     errors: list[str] = []
     candidate_rows = list(candidates)
@@ -113,8 +114,6 @@ def validate_shadow_freeze_snapshot(
             errors.append("resume_stage_not_report")
         if str(run.get("canonical_attempt", "")).strip():
             errors.append("shadow_attempt_must_not_be_canonical")
-        if str(run.get("coverage_confidence", "")).strip() == "LOW":
-            errors.append("freeze_not_allowed_from_low_coverage")
         if _int(run.get("frozen_item_count")) != len(items):
             errors.append("frozen_item_count_mismatch")
         if _int(run.get("selected_count")) != len(items):
