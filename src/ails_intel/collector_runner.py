@@ -57,6 +57,10 @@ def _build_collector(spec, *, prior_signals=None):
 
 
 def signal_priority_for_channel(channel_id: str) -> str:
+    # SourceRegistry priority describes scan importance, not event severity.
+    # Hard/clinical/product/regional discovery starts at P1; technical frontier
+    # starts at P2. Source-specific deterministic gates may demote a weaker C3
+    # record to P2 before the reasoning worker sees it.
     return "P2" if channel_id == "C5" else "P1"
 
 
@@ -70,20 +74,35 @@ def existing_signal_action(record: dict[str, object] | None) -> str:
     return "duplicate"
 
 
-def _signal(item, *, run_key, batch_id, producer_id, channel_id, route_id, source_id, discovery_method, discovered_at, date_token):
+def _signal(
+    item,
+    *,
+    run_key,
+    batch_id,
+    producer_id,
+    channel_id,
+    route_id,
+    source_id,
+    discovery_method,
+    discovered_at,
+    date_token,
+):
     key = make_signal_key(source_id, item.stable_id, item.url, item.title, item.published_date)
     priority = str(getattr(item, "priority_hint", "") or "").strip() or signal_priority_for_channel(channel_id)
     notes = str(getattr(item, "notes", "") or "").strip()
     return key, SignalRecord({
         "signal_id": make_signal_id(date_token, key), "run_key": run_key,
         "collection_batch_id": batch_id, "producer_id": producer_id, "origin_attempt_id": "",
-        "discovered_at_bjt": discovered_at, "channel_id": channel_id, "route_id": route_id, "source_id": source_id,
+        "discovered_at_bjt": discovered_at, "channel_id": channel_id,
+        "route_id": route_id, "source_id": source_id,
         "discovery_method": discovery_method, "raw_title": item.title, "raw_snippet": item.snippet,
-        "entity_hint": "", "action_hint": "", "asset_hint": "", "event_date_hint": item.event_date,
-        "published_at_hint": item.published_date, "first_public_at_hint": item.first_public_at, "url": item.url,
-        "stable_id": item.stable_id, "signal_key": key, "event_key_hint": "", "priority_hint": priority,
-        "ai_core_hint": "TRUE", "life_science_core_hint": "TRUE", "signal_state": "active", "notes": notes,
-        "schema_version": "v11.0",
+        "entity_hint": "", "action_hint": "", "asset_hint": "",
+        "event_date_hint": item.event_date, "published_at_hint": item.published_date,
+        "first_public_at_hint": item.first_public_at, "url": item.url, "stable_id": item.stable_id,
+        "signal_key": key, "event_key_hint": "",
+        "priority_hint": priority,
+        "ai_core_hint": "TRUE", "life_science_core_hint": "TRUE",
+        "signal_state": "active", "notes": notes, "schema_version": "v11.0",
     })
 
 
@@ -176,7 +195,11 @@ def main():
         reactivated = 0
         for item in outcome.relevant_items:
             effective_priority = str(getattr(item, "priority_hint", "") or "").strip() or signal_priority_for_channel(spec.channel_id)
-            key, signal = _signal(item, run_key=run_key, batch_id=batch_id, producer_id=producer_id, channel_id=spec.channel_id, route_id=route_id, source_id=spec.source_id, discovery_method=route_kind, discovered_at=checked_at, date_token=now.strftime("%Y%m%d"))
+            key, signal = _signal(
+                item, run_key=run_key, batch_id=batch_id, producer_id=producer_id,
+                channel_id=spec.channel_id, route_id=route_id, source_id=spec.source_id,
+                discovery_method=route_kind, discovered_at=checked_at, date_token=now.strftime("%Y%m%d"),
+            )
             record = existing_records.get(key)
             action = existing_signal_action(record)
             if action == "duplicate":
@@ -189,35 +212,49 @@ def main():
                 record["notes"] = "revalidated_after_sprint2.1"
                 reactivated += 1
                 continue
+
             existing_records[key] = {"row": 0, "state": "active", "notes": str(getattr(item, "notes", "") or "")}
             new_for_collector.append(signal)
 
         all_new.extend(new_for_collector)
         total_duplicates += duplicates
         total_reactivated += reactivated
+
         hit_count = len(outcome.relevant_items)
         coverage.append(CoverageRecord({
             "run_key": run_key, "source_id": spec.source_id, "source_name": source.source_name,
             "source_group": "structured", "route": route_kind, "status": _legacy_status(outcome.execution_status),
-            "hit_count": hit_count, "representative_url": outcome.representative_url, "failure_reason": outcome.failure_reason,
-            "checked_at_bjt": checked_at, "fallback_used": "FALSE", "notes": outcome.diagnostic_note,
-            "retrieval_status": outcome.execution_status, "hit_status": "hit" if hit_count else "no_hit",
+            "hit_count": hit_count, "representative_url": outcome.representative_url,
+            "failure_reason": outcome.failure_reason, "checked_at_bjt": checked_at,
+            "fallback_used": "FALSE", "notes": outcome.diagnostic_note, "retrieval_status": outcome.execution_status,
+            "hit_status": "hit" if hit_count else "no_hit",
             "coverage_id": make_coverage_id(run_key, producer_id, "", spec.channel_id, route_id, spec.source_id),
             "attempt_id": "", "producer_id": producer_id, "channel_id": spec.channel_id, "route_id": route_id,
             "execution_status": outcome.execution_status, "saturation_status": outcome.saturation_status,
             "results_seen": outcome.results_seen, "relevant_signal_count": hit_count, "schema_version": "v11.0",
         }))
-        log_event("collector", component="collector_runner", status="PASS" if outcome.execution_status != "failed" else "DEGRADED", collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key, execution_status=outcome.execution_status, saturation_status=outcome.saturation_status, results_seen=outcome.results_seen, signal_count=len(new_for_collector), duplicate_count=duplicates, reactivated_count=reactivated, collection_batch_id=batch_id)
+        log_event(
+            "collector", component="collector_runner", status="PASS" if outcome.execution_status != "failed" else "DEGRADED",
+            collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key,
+            execution_status=outcome.execution_status, saturation_status=outcome.saturation_status,
+            results_seen=outcome.results_seen, signal_count=len(new_for_collector), duplicate_count=duplicates,
+            reactivated_count=reactivated, collection_batch_id=batch_id,
+        )
 
     store.reactivate_diagnostic_signals(reactivation_updates)
     store.append_signals(all_new)
     store.upsert_coverage(coverage)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     failed = sum(1 for r in coverage if r.values.get("execution_status") == "failed")
-    # Individual source failures are coverage degradation, not transaction-integrity
-    # failures. Preserve the diagnostics and return success so downstream Worker
-    # Search can compensate. Configuration/state failures above still fail closed.
-    log_event("structured_collectors", component="collector_runner", status="PASS" if failed == 0 else "DEGRADED", run_key=run_key, signal_count=len(all_new), duplicate_count=total_duplicates, reactivated_count=total_reactivated, error_count=failed, elapsed_ms=elapsed_ms)
+    log_event(
+        "structured_collectors", component="collector_runner",
+        status="PASS" if failed == 0 else "DEGRADED", run_key=run_key,
+        signal_count=len(all_new), duplicate_count=total_duplicates,
+        reactivated_count=total_reactivated, error_count=failed, elapsed_ms=elapsed_ms,
+    )
+    # Per-source collection failure is a coverage degradation, not a transaction
+    # integrity failure. Diagnostics are already persisted above, so downstream
+    # Worker Search must remain available to compensate.
     raise SystemExit(0)
 
 
