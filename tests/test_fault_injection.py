@@ -6,7 +6,10 @@ from ails_intel import collector_runner
 from ails_intel.coverage_gate import validate_gate_snapshot
 from ails_intel.fingerprint import frozen_manifest_fingerprint
 from ails_intel.freeze_contract import validate_shadow_freeze_snapshot
-from ails_intel.snapshot_policy import barrier_required_structured_collector_ids
+from ails_intel.snapshot_policy import (
+    barrier_required_structured_collector_ids,
+    validate_structured_snapshot_barrier,
+)
 
 
 class _CfgValue:
@@ -115,7 +118,7 @@ def test_single_source_timeout_degrades_batch_but_does_not_stop_remaining_collec
     assert store.coverage[1].values["execution_status"] == "complete"
 
 
-def test_single_source_failure_has_no_barrier_veto_and_low_coverage_can_reach_freeze():
+def test_single_source_failure_is_terminal_observation_and_low_coverage_can_reach_freeze():
     """Contract-level continuation across barrier, coverage gate, and freeze."""
     cfg = {
         "structured_collectors_json": [
@@ -123,7 +126,30 @@ def test_single_source_failure_has_no_barrier_veto_and_low_coverage_can_reach_fr
             {"id": "COL-PUBMED", "enabled": True, "barrier_required": True},
         ]
     }
-    assert barrier_required_structured_collector_ids(cfg) == set()
+    expected = barrier_required_structured_collector_ids(cfg)
+    assert expected == {"COL-BIORXIV", "COL-PUBMED"}
+
+    coverage = [
+        {
+            "run_key": "AILS11S-FI",
+            "producer_id": "collector/COL-BIORXIV",
+            "checked_at_bjt": "2026-08-14T20:33:10+08:00",
+            "execution_status": "failed",
+        },
+        {
+            "run_key": "AILS11S-FI",
+            "producer_id": "collector/COL-PUBMED",
+            "checked_at_bjt": "2026-08-14T20:33:11+08:00",
+            "execution_status": "complete",
+        },
+    ]
+    assert validate_structured_snapshot_barrier(
+        run_key="AILS11S-FI",
+        report_date="2026-08-14",
+        coverage_rows=coverage,
+        expected_collector_ids=expected,
+        not_before_bjt="18:00:00",
+    ) == []
 
     mandatory = ["C1", "C2", "C3", "C4", "C6"]
     run = {

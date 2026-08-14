@@ -9,13 +9,15 @@ from zoneinfo import ZoneInfo
 from ails_intel.auth import build_sheets_service, spreadsheet_id_from_env
 from ails_intel.runtime import load_active_config
 from ails_intel.safe_logger import log_event
-from ails_intel.snapshot_policy import barrier_required_structured_collector_ids
+from ails_intel.snapshot_policy import (
+    barrier_required_structured_collector_ids,
+    validate_structured_snapshot_barrier,
+)
 from ails_intel.state.sheets import SheetsStore
 from ails_intel.unified_ingestion import (
     WORKER_PRODUCERS,
     compact_manifest_hash,
     required_worker_routes,
-    validate_structured_snapshot_barrier,
     validate_unified_ingestion_snapshot,
 )
 

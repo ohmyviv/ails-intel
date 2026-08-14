@@ -1,9 +1,9 @@
+from ails_intel.snapshot_policy import validate_structured_snapshot_barrier
 from ails_intel.unified_ingestion import (
     build_worker_coverage,
     build_worker_signal,
     enabled_structured_collector_ids,
     required_worker_routes,
-    validate_structured_snapshot_barrier,
     validate_unified_ingestion_snapshot,
 )
 
@@ -111,10 +111,10 @@ def _collector_coverage(collector_id, checked_at, status="complete"):
     }
 
 
-def test_structured_snapshot_barrier_accepts_fresh_partial_collector():
+def test_structured_snapshot_barrier_accepts_fresh_partial_and_failed_collectors():
     coverage = [
-        _collector_coverage("COL-A", "2026-08-10T19:10:00+08:00", "complete"),
-        _collector_coverage("COL-B", "2026-08-10T19:12:00+08:00", "partial"),
+        _collector_coverage("COL-A", "2026-08-10T19:10:00+08:00", "partial"),
+        _collector_coverage("COL-B", "2026-08-10T19:12:00+08:00", "failed"),
     ]
     errors = validate_structured_snapshot_barrier(
         run_key=RUN,
@@ -146,12 +146,12 @@ def test_structured_snapshot_barrier_detects_missing_stale_and_drift():
     assert "signal_count_snapshot_drift" in errors
 
 
-def test_structured_snapshot_barrier_rejects_failed_collector():
+def test_structured_snapshot_barrier_rejects_nonterminal_collector():
     errors = validate_structured_snapshot_barrier(
         run_key=RUN,
         report_date="2026-08-10",
-        coverage_rows=[_collector_coverage("COL-A", "2026-08-10T19:00:00+08:00", "failed")],
+        coverage_rows=[_collector_coverage("COL-A", "2026-08-10T19:00:00+08:00", "running")],
         expected_collector_ids={"COL-A"},
         not_before_bjt="18:00",
     )
-    assert errors == ["structured_snapshot_unready_collector"]
+    assert errors == ["structured_snapshot_nonterminal_collector"]
