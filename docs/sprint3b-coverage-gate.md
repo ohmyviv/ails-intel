@@ -14,6 +14,8 @@ If no LOW condition exists, one partial mandatory channel, any collector saturat
 
 `HIGH` requires complete mandatory coverage, completed premium sweep, no unresolved gap, no signal-volume anomaly, no saturation, no due P0 pending work, and no rescue/material rescue anomaly.
 
+Coverage confidence is descriptive, not a source-level transaction veto. A LOW result must trigger the configured Rescue path when applicable and must remain visible in downstream state/reporting, but LOW alone does not prevent progression to Freeze. The pre-freeze validator checks that channel counts and status are internally consistent rather than requiring every channel to be complete.
+
 ## Rescue trigger
 
 Rescue is required when pre-rescue coverage is LOW, a previous report gap exists, signal volume is abnormally low, or the rolling critical-miss count is nonzero.
