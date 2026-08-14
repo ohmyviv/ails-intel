@@ -6,6 +6,7 @@ from ails_intel.challenger_audit import (
     PRIMARY_SOURCE_STATUSES,
 )
 from ails_intel.migrations import MIGRATIONS, sprint_4_6_a1
+from ails_intel.schema_manifest import EXPECTED_HEADERS, VALIDATION_PROBES
 
 
 def test_sprint_4_6_a1_contract():
@@ -13,21 +14,39 @@ def test_sprint_4_6_a1_contract():
     assert spec.migration_id == "sprint_4_6_a1"
     assert MIGRATIONS[spec.migration_id] is sprint_4_6_a1
 
-    assert len(spec.sheets) == 1
-    sheet = spec.sheets[0]
-    assert sheet.title == "Lite_ChallengerAudit"
-    assert sheet.headers == tuple(CHALLENGER_HEADERS)
-    assert sheet.row_count == 3000
+    assert len(spec.sheets) == 2
+    sheets = {sheet.title: sheet for sheet in spec.sheets}
 
-    rules = {
-        sheet.headers[rule.column_index]: set(rule.values)
-        for rule in sheet.validations
+    challenger = sheets["Lite_ChallengerAudit"]
+    assert challenger.headers == tuple(CHALLENGER_HEADERS)
+    assert challenger.row_count == 3000
+
+    challenger_rules = {
+        challenger.headers[rule.column_index]: set(rule.values)
+        for rule in challenger.validations
     }
-    assert rules == {
+    assert challenger_rules == {
         "disposition": CHALLENGER_DISPOSITIONS,
         "miss_type": MISS_TYPES,
         "miss_severity": MISS_SEVERITIES,
         "primary_source_status": PRIMARY_SOURCE_STATUSES,
+    }
+
+    signals = sheets["Lite_Signals"]
+    assert signals.headers == tuple(EXPECTED_HEADERS["Lite_Signals"])
+    assert signals.row_count == 5000
+
+    signal_rules = {
+        signals.headers[rule.column_index]: set(rule.values)
+        for rule in signals.validations
+    }
+    assert signal_rules == {
+        "channel_id": VALIDATION_PROBES["Lite_Signals!G2"],
+        "discovery_method": VALIDATION_PROBES["Lite_Signals!J2"],
+        "priority_hint": VALIDATION_PROBES["Lite_Signals!W2"],
+        "ai_core_hint": VALIDATION_PROBES["Lite_Signals!X2"],
+        "life_science_core_hint": VALIDATION_PROBES["Lite_Signals!Y2"],
+        "signal_state": VALIDATION_PROBES["Lite_Signals!Z2"],
     }
 
     configs = {item.key: item for item in spec.config_upserts}
