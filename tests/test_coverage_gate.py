@@ -107,7 +107,22 @@ def test_gate_snapshot_accepts_medium_ready_for_freeze():
     assert errors == []
 
 
-def test_gate_snapshot_rejects_low_or_premature_writes():
+def test_gate_snapshot_accepts_low_after_rescue_when_counts_are_consistent():
+    run = _ready_run()
+    run["coverage_confidence"] = "LOW"
+    run["coverage_gate_reason"] = "coverage remains low after bounded rescue"
+    run["mandatory_channels_completed"] = "3"
+    errors = validate_gate_snapshot(
+        run=run,
+        mandatory_channels=MANDATORY,
+        channel_health={"C1": "complete", "C2": "complete", "C3": "complete", "C4": "partial", "C6": "partial"},
+        daily_items_for_run=0,
+        event_index_ownership_count=0,
+    )
+    assert errors == []
+
+
+def test_gate_snapshot_rejects_inconsistent_counts_or_premature_writes():
     run = _ready_run()
     run["coverage_confidence"] = "LOW"
     errors = validate_gate_snapshot(
@@ -117,7 +132,6 @@ def test_gate_snapshot_rejects_low_or_premature_writes():
         daily_items_for_run=1,
         event_index_ownership_count=1,
     )
-    assert "final_coverage_still_low" in errors
-    assert "mandatory_channel_not_complete" in errors
+    assert "mandatory_complete_count_mismatch" in errors
     assert "dailyitems_written_before_freeze" in errors
     assert "eventindex_written_in_shadow" in errors

@@ -187,7 +187,7 @@ def main():
                 "execution_status": "failed", "saturation_status": "unknown", "results_seen": 0,
                 "relevant_signal_count": 0, "schema_version": "v11.0",
             }))
-            log_event("collector", component="collector_runner", status="FAIL", collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key, execution_status="failed", error_code=failure_reason)
+            log_event("collector", component="collector_runner", status="DEGRADED", collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key, execution_status="failed", error_code=failure_reason)
             continue
 
         new_for_collector = []
@@ -234,7 +234,7 @@ def main():
             "results_seen": outcome.results_seen, "relevant_signal_count": hit_count, "schema_version": "v11.0",
         }))
         log_event(
-            "collector", component="collector_runner", status="PASS" if outcome.execution_status != "failed" else "FAIL",
+            "collector", component="collector_runner", status="PASS" if outcome.execution_status != "failed" else "DEGRADED",
             collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key,
             execution_status=outcome.execution_status, saturation_status=outcome.saturation_status,
             results_seen=outcome.results_seen, signal_count=len(new_for_collector), duplicate_count=duplicates,
@@ -248,11 +248,14 @@ def main():
     failed = sum(1 for r in coverage if r.values.get("execution_status") == "failed")
     log_event(
         "structured_collectors", component="collector_runner",
-        status="PASS" if failed == 0 else "FAIL", run_key=run_key,
+        status="PASS" if failed == 0 else "DEGRADED", run_key=run_key,
         signal_count=len(all_new), duplicate_count=total_duplicates,
         reactivated_count=total_reactivated, error_count=failed, elapsed_ms=elapsed_ms,
     )
-    raise SystemExit(0 if failed == 0 else 1)
+    # Per-source collection failure is a coverage degradation, not a transaction
+    # integrity failure. Diagnostics are already persisted above, so downstream
+    # Worker Search must remain available to compensate.
+    raise SystemExit(0)
 
 
 if __name__ == "__main__":

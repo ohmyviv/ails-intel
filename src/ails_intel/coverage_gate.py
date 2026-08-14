@@ -169,7 +169,13 @@ def validate_gate_snapshot(
     daily_items_for_run: int,
     event_index_ownership_count: int,
 ) -> list[str]:
-    """Validate the pre-freeze v11 shadow boundary without exposing private content."""
+    """Validate the pre-freeze v11 shadow boundary without exposing private content.
+
+    Coverage quality is descriptive and compensatory, not a transaction-integrity
+    barrier. LOW coverage may proceed after required Rescue as long as the recorded
+    coverage counts are internally consistent. Freeze remains responsible for the
+    integrity and evidence contract of selected items.
+    """
     errors: list[str] = []
     mandatory = [str(x).strip() for x in mandatory_channels if str(x).strip()]
 
@@ -179,8 +185,6 @@ def validate_gate_snapshot(
         errors.append("invalid_pre_rescue_confidence")
     if final not in VALID_CONFIDENCE:
         errors.append("invalid_final_confidence")
-    if final == "LOW":
-        errors.append("final_coverage_still_low")
 
     if str(run.get("stage", "")).strip() != "coverage_gate":
         errors.append("stage_not_coverage_gate")
@@ -199,14 +203,13 @@ def validate_gate_snapshot(
 
     observed_total = _int_value(run.get("mandatory_channels_total"))
     observed_complete = _int_value(run.get("mandatory_channels_completed"))
+    actual_complete = sum(
+        1 for channel in mandatory if _health(channel_health.get(channel)) == "complete"
+    )
     if observed_total != len(mandatory):
         errors.append("mandatory_total_mismatch")
-    if observed_complete != len(mandatory):
-        errors.append("mandatory_not_all_complete")
-
-    for channel in mandatory:
-        if _health(channel_health.get(channel)) != "complete":
-            errors.append("mandatory_channel_not_complete")
+    if observed_complete != actual_complete:
+        errors.append("mandatory_complete_count_mismatch")
 
     if pre == "LOW" and not _truthy(run.get("rescue_triggered")):
         errors.append("low_pre_rescue_without_rescue")
