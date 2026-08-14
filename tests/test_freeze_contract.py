@@ -29,7 +29,7 @@ def _item(index=1, delta="d1", event="e1"):
     }
 
 
-def _run(items):
+def _run(items, coverage_confidence="MEDIUM"):
     return {
         "run_key": RUN,
         "attempt_id": ATTEMPT,
@@ -38,7 +38,7 @@ def _run(items):
         "delivery_status": "not_started",
         "resume_stage": "report",
         "canonical_attempt": "",
-        "coverage_confidence": "MEDIUM",
+        "coverage_confidence": coverage_confidence,
         "frozen_item_count": len(items),
         "selected_count": len(items),
         "write_status": "success",
@@ -56,6 +56,20 @@ def test_valid_shadow_freeze_snapshot_passes():
         candidates=[_candidate()],
         daily_items=items,
         run_rows=[_run(items)],
+        event_index_rows=[],
+        max_items=12,
+    )
+    assert errors == []
+
+
+def test_low_coverage_does_not_invalidate_an_integral_manifest():
+    items = [_item()]
+    errors = validate_shadow_freeze_snapshot(
+        run_key=RUN,
+        attempt_id=ATTEMPT,
+        candidates=[_candidate()],
+        daily_items=items,
+        run_rows=[_run(items, coverage_confidence="LOW")],
         event_index_rows=[],
         max_items=12,
     )
