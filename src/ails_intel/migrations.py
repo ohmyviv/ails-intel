@@ -15,6 +15,7 @@ from ails_intel.challenger_audit import (
     PRIMARY_SOURCE_STATUSES,
 )
 from ails_intel.safe_logger import log_event
+from ails_intel.schema_manifest import EXPECTED_HEADERS, VALIDATION_PROBES
 
 BJT = ZoneInfo("Asia/Shanghai")
 
@@ -54,6 +55,17 @@ def sprint_4_6_a1() -> MigrationSpec:
     miss_type_col = CHALLENGER_HEADERS.index("miss_type")
     severity_col = CHALLENGER_HEADERS.index("miss_severity")
     primary_status_col = CHALLENGER_HEADERS.index("primary_source_status")
+
+    signal_headers = EXPECTED_HEADERS["Lite_Signals"]
+    signal_validation_keys = (
+        ("channel_id", "Lite_Signals!G2"),
+        ("discovery_method", "Lite_Signals!J2"),
+        ("priority_hint", "Lite_Signals!W2"),
+        ("ai_core_hint", "Lite_Signals!X2"),
+        ("life_science_core_hint", "Lite_Signals!Y2"),
+        ("signal_state", "Lite_Signals!Z2"),
+    )
+
     return MigrationSpec(
         migration_id="sprint_4_6_a1",
         sheets=(
@@ -66,6 +78,18 @@ def sprint_4_6_a1() -> MigrationSpec:
                     ValidationRule(miss_type_col, tuple(sorted(MISS_TYPES))),
                     ValidationRule(severity_col, tuple(sorted(MISS_SEVERITIES))),
                     ValidationRule(primary_status_col, tuple(sorted(PRIMARY_SOURCE_STATUSES))),
+                ),
+            ),
+            SheetSpec(
+                title="Lite_Signals",
+                headers=tuple(signal_headers),
+                row_count=5000,
+                validations=tuple(
+                    ValidationRule(
+                        signal_headers.index(column_name),
+                        tuple(sorted(VALIDATION_PROBES[a1])),
+                    )
+                    for column_name, a1 in signal_validation_keys
                 ),
             ),
         ),
@@ -150,6 +174,7 @@ def _ensure_sheet(service, spreadsheet_id: str, spec: SheetSpec, *, apply: bool)
         props = _sheet_map(service, spreadsheet_id)[spec.title]
 
     grid = props.get("gridProperties", {})
+    validation_row_count = max(spec.row_count, int(grid.get("rowCount", 0)))
     resize: dict[str, int] = {}
     if int(grid.get("rowCount", 0)) < spec.row_count:
         resize["rowCount"] = spec.row_count
@@ -195,7 +220,7 @@ def _ensure_sheet(service, spreadsheet_id: str, spec: SheetSpec, *, apply: bool)
                         "range": {
                             "sheetId": props["sheetId"],
                             "startRowIndex": 1,
-                            "endRowIndex": spec.row_count,
+                            "endRowIndex": validation_row_count,
                             "startColumnIndex": rule.column_index,
                             "endColumnIndex": rule.column_index + 1,
                         },
