@@ -11,6 +11,7 @@ on:
         type: choice
         options:
           - sprint_4_6_a1
+          - sprint_4_6_b1
       apply:
         description: Apply writes to the live Sheet
         required: true
@@ -55,12 +56,14 @@ jobs:
         if: ${{ !inputs.apply }}
         env:
           AILS_SPREADSHEET_ID: ${{ secrets.AILS_SPREADSHEET_ID }}
+          AILS_PRIVATE_MIGRATIONS_JSON: ${{ secrets.AILS_PRIVATE_MIGRATIONS_JSON }}
         run: python -m ails_intel.migrations --migration "${{ inputs.migration }}"
 
       - name: Apply migration and verify readback
         if: ${{ inputs.apply }}
         env:
           AILS_SPREADSHEET_ID: ${{ secrets.AILS_SPREADSHEET_ID }}
+          AILS_PRIVATE_MIGRATIONS_JSON: ${{ secrets.AILS_PRIVATE_MIGRATIONS_JSON }}
         run: python -m ails_intel.migrations --migration "${{ inputs.migration }}" --apply
 
       - name: Validate existing live schema
