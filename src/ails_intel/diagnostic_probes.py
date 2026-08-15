@@ -12,6 +12,14 @@ KNOWN_PREPRINT_DOIS = {
     "COL-BIORXIV": "10.1101/2025.02.13.638084",
     "COL-MEDRXIV": "10.1101/2021.01.22.21250054",
 }
+_ALWAYS_TEXT_KEYS = {
+    "abstracttext",
+    "authorstring",
+    "affiliation",
+    "affiliationtext",
+    "keyword",
+    "keywords",
+}
 
 
 def _server_for_collector(collector_id: str) -> str:
@@ -60,19 +68,50 @@ def europepmc_probe_url(collector_id: str, window) -> str:
     return targets[0][1] if targets else ""
 
 
+def _server_match_paths(value, server: str, *, path: str = "") -> set[str]:
+    """Find metadata paths containing the preprint-server label without logging values."""
+    matches: set[str] = set()
+    server_lower = server.lower()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key)
+            key_lower = key_text.lower()
+            # Exclude article/free-text fields, but retain nested metadata title
+            # fields such as journalInfo.journal.title.
+            if key_lower in _ALWAYS_TEXT_KEYS or (not path and key_lower == "title"):
+                continue
+            child_path = f"{path}.{key_text}" if path else key_text
+            matches.update(_server_match_paths(child, server, path=child_path))
+        return matches
+    if isinstance(value, list):
+        for child in value:
+            matches.update(_server_match_paths(child, server, path=f"{path}[]"))
+        return matches
+    if isinstance(value, str) and server_lower in value.strip().lower():
+        matches.add(path)
+    return matches
+
+
 def _probe_fields(payload: dict, server: str) -> dict[str, object]:
     results = ((payload.get("resultList") or {}).get("result") or [])
-    server_lower = server.lower()
+    matched_paths: set[str] = set()
+    server_match_count = 0
+    for item in results:
+        paths = _server_match_paths(item, server)
+        if paths:
+            server_match_count += 1
+            matched_paths.update(paths)
+    result_keys = ",".join(sorted(str(key) for key in results[0].keys())) if results else ""
     return {
         "epmc_hit_count": int(payload.get("hitCount", 0) or 0),
         "epmc_result_count": len(results),
-        "epmc_server_match_count": sum(
-            1 for item in results if str(item.get("journalTitle", "")).strip().lower() == server_lower
-        ),
+        "epmc_server_match_count": server_match_count,
         "epmc_doi_count": sum(1 for item in results if str(item.get("doi", "")).strip()),
         "epmc_title_count": sum(1 for item in results if str(item.get("title", "")).strip()),
         "epmc_abstract_count": sum(1 for item in results if str(item.get("abstractText", "")).strip()),
         "epmc_date_count": sum(1 for item in results if str(item.get("firstPublicationDate", "")).strip()),
+        "epmc_result_keys": result_keys[:1200],
+        "epmc_server_match_paths": ",".join(sorted(matched_paths))[:1200],
     }
 
 

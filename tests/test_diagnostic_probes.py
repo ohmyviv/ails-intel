@@ -4,6 +4,7 @@ from ails_intel.collectors.base import Window
 from ails_intel.diagnostic_probes import (
     _probe_fields,
     _probe_usable,
+    _server_match_paths,
     europepmc_probe_url,
     europepmc_probe_urls,
 )
@@ -44,20 +45,32 @@ def test_europepmc_probe_rejects_unrelated_collector():
     assert europepmc_probe_urls("COL-PUBMED", window) == []
 
 
-def test_probe_fields_only_returns_safe_counts():
+def test_server_match_paths_find_metadata_but_ignore_article_text():
+    item = {
+        "title": "A study mentioning bioRxiv in its title",
+        "journalInfo": {"journal": {"title": "bioRxiv"}},
+        "fullTextUrlList": {"fullTextUrl": [{"site": "bioRxiv"}]},
+    }
+    assert _server_match_paths(item, "bioRxiv") == {
+        "journalInfo.journal.title",
+        "fullTextUrlList.fullTextUrl[].site",
+    }
+
+
+def test_probe_fields_only_returns_safe_counts_and_paths():
     payload = {
         "hitCount": 12,
         "resultList": {
             "result": [
                 {
-                    "journalTitle": "bioRxiv",
+                    "journalInfo": {"journal": {"title": "bioRxiv"}},
                     "doi": "10.1101/example",
                     "title": "Example",
                     "abstractText": "Abstract",
                     "firstPublicationDate": "2026-08-15",
                 },
                 {
-                    "journalTitle": "bioRxiv",
+                    "journalInfo": {"journal": {"title": "bioRxiv"}},
                     "doi": "10.1101/example2",
                     "title": "Example 2",
                     "firstPublicationDate": "2026-08-14",
@@ -66,15 +79,15 @@ def test_probe_fields_only_returns_safe_counts():
         },
     }
     fields = _probe_fields(payload, "bioRxiv")
-    assert fields == {
-        "epmc_hit_count": 12,
-        "epmc_result_count": 2,
-        "epmc_server_match_count": 2,
-        "epmc_doi_count": 2,
-        "epmc_title_count": 2,
-        "epmc_abstract_count": 1,
-        "epmc_date_count": 2,
-    }
+    assert fields["epmc_hit_count"] == 12
+    assert fields["epmc_result_count"] == 2
+    assert fields["epmc_server_match_count"] == 2
+    assert fields["epmc_doi_count"] == 2
+    assert fields["epmc_title_count"] == 2
+    assert fields["epmc_abstract_count"] == 1
+    assert fields["epmc_date_count"] == 2
+    assert fields["epmc_server_match_paths"] == "journalInfo.journal.title"
+    assert "journalInfo" in fields["epmc_result_keys"]
     assert _probe_usable("europepmc_current_server_probe", fields)
     assert _probe_usable("europepmc_current_ppr_probe", fields)
     assert _probe_usable("europepmc_known_record_probe", fields)
