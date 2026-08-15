@@ -20,7 +20,7 @@ def test_europepmc_probe_targets_biorxiv_and_date_window():
     ]
     current_url = targets[0][1]
     assert "europepmc/webservices/rest/search" in current_url
-    assert "JOURNAL%3A%22bioRxiv%22" in current_url
+    assert "PUBLISHER%3A%22bioRxiv%22" in current_url
     assert "FIRST_PDATE%3A%5B2026-08-08+TO+2026-08-15%5D" in current_url
     assert "resultType=core" in current_url
     assert "format=json" in current_url
@@ -30,7 +30,7 @@ def test_europepmc_probe_targets_biorxiv_and_date_window():
 def test_europepmc_probe_targets_medrxiv_and_known_control():
     window = Window(date(2026, 8, 8), date(2026, 8, 15))
     targets = europepmc_probe_urls("COL-MEDRXIV", window)
-    assert "JOURNAL%3A%22medRxiv%22" in targets[0][1]
+    assert "PUBLISHER%3A%22medRxiv%22" in targets[0][1]
     assert "DOI%3A%2210.1101%2F2021.01.22.21250054%22" in targets[2][1]
 
 
