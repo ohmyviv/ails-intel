@@ -49,7 +49,7 @@ def europepmc_probe_urls(collector_id: str, window) -> list[tuple[str, str]]:
     return [
         (
             "europepmc_current_server_probe",
-            _search_url(f'SRC:PPR AND JOURNAL:"{server}" AND {date_clause}', page_size=25),
+            _search_url(f'SRC:PPR AND PUBLISHER:"{server}" AND {date_clause}', page_size=25),
         ),
         (
             "europepmc_current_ppr_probe",
