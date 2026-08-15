@@ -1,0 +1,63 @@
+name: Collector Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      collector:
+        description: "Collector ID, comma-separated IDs, or 'all' (blank = default degraded-source set)"
+        required: false
+        type: string
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/collector-diagnostics.yml"
+      - "src/ails_intel/collector_diagnostics.py"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ails-collector-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.repository == 'ohmyviv/ails-intel'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+      - name: Install
+        run: pip install -e .
+      - name: Run read-only collector diagnostics
+        env:
+          AILS_SPREADSHEET_ID: ${{ secrets.AILS_SPREADSHEET_ID }}
+          COLLECTOR: ${{ inputs.collector || '' }}
+        shell: bash
+        run: |
+          args=()
+          if [ -n "$COLLECTOR" ]; then
+            IFS=',' read -ra collector_ids <<< "$COLLECTOR"
+            for collector_id in "${collector_ids[@]}"; do
+              collector_id="$(echo "$collector_id" | xargs)"
+              if [ -n "$collector_id" ]; then
+                args+=(--collector "$collector_id")
+              fi
+            done
+          fi
+          python -m ails_intel.collector_diagnostics "${args[@]}"
