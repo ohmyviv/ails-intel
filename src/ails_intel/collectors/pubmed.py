@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import time
 import xml.etree.ElementTree as ET
 from datetime import date
 
@@ -79,20 +80,114 @@ class PubMedCollector:
     source_id = "SRC-040"
     channel_id = "C5"
     base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    # PubMed ESearch retrieval is bounded at 10,000 records. Keep the same
+    # ceiling for one daily date-bounded collector run, and report partial
+    # coverage if the source window ever exceeds it rather than pretending the
+    # first page is complete.
+    default_scan_budget = 10_000
+    default_fetch_batch_size = 200
+    default_request_interval_seconds = 0.36
 
-    def __init__(self, *, gate_options: dict[str, object] | None = None):
+    def __init__(
+        self,
+        *,
+        gate_options: dict[str, object] | None = None,
+        scan_budget: int | None = None,
+        fetch_batch_size: int | None = None,
+        request_interval_seconds: float | None = None,
+        sleep_fn=None,
+    ):
         self.gate = dict(gate_options or {})
+        self.scan_budget = max(1, min(int(scan_budget or self.default_scan_budget), 10_000))
+        self.fetch_batch_size = max(1, min(int(fetch_batch_size or self.default_fetch_batch_size), 1_000))
+        self.request_interval_seconds = max(
+            0.0,
+            float(
+                self.default_request_interval_seconds
+                if request_interval_seconds is None
+                else request_interval_seconds
+            ),
+        )
+        self._sleep = sleep_fn or time.sleep
+
+    def _item_from_article(self, article, *, source: SourceSpec, window: Window, counters: dict[str, int]) -> RawItem | None:
+        pmid = (article.findtext("./MedlineCitation/PMID") or "").strip()
+        title = _node_text(article.find("./MedlineCitation/Article/ArticleTitle"))
+        abstract_parts = []
+        abstract_labels = []
+        for node in article.findall("./MedlineCitation/Article/Abstract/AbstractText"):
+            label = (node.attrib.get("Label") or "").strip()
+            text = _node_text(node)
+            if label:
+                abstract_labels.append(label)
+            if text:
+                abstract_parts.append(f"{label}: {text}" if label else text)
+        abstract = " ".join(abstract_parts).strip()
+        combined = f"{title}\n{abstract}"
+        if not local_relevance(combined, source.query_template):
+            counters["filtered_local"] += 1
+            return None
+
+        if bool(self.gate.get("enabled", False)):
+            pub_types = _publication_types(article)
+            excluded = {
+                str(x).strip().casefold()
+                for x in (self.gate.get("exclude_publication_types") or [])
+                if str(x).strip()
+            }
+            if pub_types & excluded:
+                counters["filtered_pubtype"] += 1
+                return None
+
+            if bool(self.gate.get("require_original_contribution", False)):
+                strong_types = {
+                    str(x).strip().casefold()
+                    for x in (self.gate.get("strong_original_publication_types") or [])
+                    if str(x).strip()
+                }
+                original_markers = [str(x) for x in (self.gate.get("original_markers") or [])]
+                structured_labels = {
+                    str(x).strip().casefold()
+                    for x in (self.gate.get("original_abstract_labels") or [])
+                    if str(x).strip()
+                }
+                label_set = {x.casefold() for x in abstract_labels}
+                has_original_evidence = bool(pub_types & strong_types)
+                has_original_evidence = has_original_evidence or bool(label_set & structured_labels)
+                has_original_evidence = has_original_evidence or _contains_any(combined, original_markers)
+                if not has_original_evidence:
+                    counters["filtered_nonoriginal"] += 1
+                    return None
+
+        first_public = _first_public_date(article, window.end)
+        if not first_public:
+            # The ESearch EDAT window proves the record is newly visible in this
+            # interval even when a detailed public-date history is absent. Use
+            # the bounded discovery end rather than a potentially future issue.
+            first_public = window.end.isoformat()
+        return RawItem(
+            stable_id=pmid,
+            title=title,
+            url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
+            published_date=first_public,
+            event_date=first_public,
+            first_public_at=first_public,
+            snippet=abstract[:1200],
+        )
 
     def collect(self, *, source: SourceSpec, window: Window, max_results: int, http) -> CollectorOutcome:
         query = strip_site_prefix(source.query_template)
+        # The output budget (max_results) and discovery scan depth are separate.
+        # ESearch posts the full date-bounded set to Entrez History; EFetch then
+        # walks that stable set in bounded batches using WebEnv/query_key.
         search = http.json(
             f"{self.base}/esearch.fcgi",
             {
                 "db": "pubmed",
                 "term": query,
                 "retmode": "json",
-                "retmax": max_results,
-                "retstart": 0,
+                "retmax": 0,
+                "usehistory": "y",
                 # EDAT is intentionally used for discovery: the run is asking
                 # what PubMed learned about in the bounded interval, not merely
                 # which journal issue carries that calendar date.
@@ -103,89 +198,90 @@ class PubMedCollector:
             },
         )
         result = search.get("esearchresult", {})
-        ids = list(result.get("idlist") or [])
         total = int(result.get("count") or 0)
-        items: list[RawItem] = []
-        filtered_local = 0
-        filtered_pubtype = 0
-        filtered_nonoriginal = 0
+        webenv = str(result.get("webenv") or result.get("WebEnv") or "").strip()
+        query_key = str(result.get("querykey") or result.get("query_key") or result.get("QueryKey") or "").strip()
+        if total and (not webenv or not query_key):
+            raise RuntimeError("PubMed ESearch history identifiers missing")
 
-        if ids:
+        scan_target = min(total, self.scan_budget)
+        scanned = 0
+        items: list[RawItem] = []
+        counters = {"filtered_local": 0, "filtered_pubtype": 0, "filtered_nonoriginal": 0}
+        history_incomplete = False
+        relevant_budget_exhausted = False
+
+        while scanned < scan_target:
+            batch_size = min(self.fetch_batch_size, scan_target - scanned)
+            if self.request_interval_seconds:
+                self._sleep(self.request_interval_seconds)
             xml = http.text(
                 f"{self.base}/efetch.fcgi",
-                {"db": "pubmed", "id": ",".join(ids), "retmode": "xml"},
+                {
+                    "db": "pubmed",
+                    "query_key": query_key,
+                    "WebEnv": webenv,
+                    "retstart": scanned,
+                    "retmax": batch_size,
+                    "retmode": "xml",
+                },
             )
             root = ET.fromstring(xml)
-            for article in root.findall("PubmedArticle"):
-                pmid = (article.findtext("./MedlineCitation/PMID") or "").strip()
-                title = _node_text(article.find("./MedlineCitation/Article/ArticleTitle"))
-                abstract_parts = []
-                abstract_labels = []
-                for node in article.findall("./MedlineCitation/Article/Abstract/AbstractText"):
-                    label = (node.attrib.get("Label") or "").strip()
-                    text = _node_text(node)
-                    if label:
-                        abstract_labels.append(label)
-                    if text:
-                        abstract_parts.append(f"{label}: {text}" if label else text)
-                abstract = " ".join(abstract_parts).strip()
-                combined = f"{title}\n{abstract}"
-                if not local_relevance(combined, source.query_template):
-                    filtered_local += 1
-                    continue
+            articles = root.findall("PubmedArticle")
+            if not articles:
+                history_incomplete = True
+                break
 
-                if bool(self.gate.get("enabled", False)):
-                    pub_types = _publication_types(article)
-                    excluded = {str(x).strip().casefold() for x in (self.gate.get("exclude_publication_types") or []) if str(x).strip()}
-                    if pub_types & excluded:
-                        filtered_pubtype += 1
-                        continue
+            for article in articles:
+                item = self._item_from_article(article, source=source, window=window, counters=counters)
+                if item is not None and len(items) < max_results:
+                    items.append(item)
+            scanned += len(articles)
 
-                    if bool(self.gate.get("require_original_contribution", False)):
-                        strong_types = {str(x).strip().casefold() for x in (self.gate.get("strong_original_publication_types") or []) if str(x).strip()}
-                        original_markers = [str(x) for x in (self.gate.get("original_markers") or [])]
-                        structured_labels = {str(x).strip().casefold() for x in (self.gate.get("original_abstract_labels") or []) if str(x).strip()}
-                        label_set = {x.casefold() for x in abstract_labels}
-                        has_original_evidence = bool(pub_types & strong_types)
-                        has_original_evidence = has_original_evidence or bool(label_set & structured_labels)
-                        has_original_evidence = has_original_evidence or _contains_any(combined, original_markers)
-                        if not has_original_evidence:
-                            filtered_nonoriginal += 1
-                            continue
+            # Once the output budget is full, scanning more source records cannot
+            # emit additional signals. Stop, but truthfully report partial source
+            # coverage unless this batch also reached the end of the source set.
+            if len(items) >= max_results and scanned < total:
+                relevant_budget_exhausted = True
+                break
 
-                first_public = _first_public_date(article, window.end)
-                if not first_public:
-                    # The ESearch EDAT window proves the record is newly visible
-                    # in this interval even when a detailed public-date history
-                    # is absent. Use the bounded discovery end as conservative
-                    # fallback rather than a potentially future issue date.
-                    first_public = window.end.isoformat()
-                items.append(
-                    RawItem(
-                        stable_id=pmid,
-                        title=title,
-                        url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
-                        published_date=first_public,
-                        event_date=first_public,
-                        first_public_at=first_public,
-                        snippet=abstract[:1200],
-                    )
-                )
+        scan_budget_exhausted = total > self.scan_budget and scanned >= self.scan_budget
+        source_complete = scanned >= total and not history_incomplete
+        if source_complete:
+            execution_status = "complete"
+            saturation_status = "clear"
+            failure_reason = ""
+        elif relevant_budget_exhausted:
+            execution_status = "partial"
+            saturation_status = "saturated"
+            failure_reason = "relevant_budget_exhausted"
+        elif scan_budget_exhausted:
+            execution_status = "partial"
+            saturation_status = "saturated"
+            failure_reason = "scan_budget_exhausted"
+        else:
+            execution_status = "partial"
+            saturation_status = "unknown"
+            failure_reason = "history_fetch_incomplete"
 
-        saturated = total > max_results
         diagnostics = ";".join([
-            f"filtered_local={filtered_local}",
-            f"filtered_pubtype={filtered_pubtype}",
-            f"filtered_nonoriginal={filtered_nonoriginal}",
+            f"source_total={total}",
+            f"scanned={scanned}",
+            f"scan_budget={self.scan_budget}",
+            f"fetch_batch_size={self.fetch_batch_size}",
+            f"filtered_local={counters['filtered_local']}",
+            f"filtered_pubtype={counters['filtered_pubtype']}",
+            f"filtered_nonoriginal={counters['filtered_nonoriginal']}",
         ])
         return CollectorOutcome(
             collector_id=self.collector_id,
             source_id=self.source_id,
             channel_id=self.channel_id,
-            execution_status="partial" if saturated else "complete",
-            saturation_status="saturated" if saturated else "clear",
-            results_seen=len(ids),
+            execution_status=execution_status,
+            saturation_status=saturation_status,
+            results_seen=scanned,
             relevant_items=items,
             representative_url=items[0].url if items else "",
+            failure_reason=failure_reason,
             diagnostic_note=diagnostics,
         )
