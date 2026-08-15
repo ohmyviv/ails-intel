@@ -8,11 +8,12 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ails_intel.auth import build_sheets_readonly_service, spreadsheet_id_from_env
-from ails_intel.collector_runner import _build_collector, _collector_supported, _is_rss_spec
+from ails_intel.collector_runner import _build_collector, _collector_supported
 from ails_intel.collectors.base import Window
 from ails_intel.collectors.rss import _date as rss_date
 from ails_intel.collectors.rss import _link as rss_link
 from ails_intel.collectors.rss import _text as rss_text
+from ails_intel.diagnostic_probes import run_europepmc_probe
 from ails_intel.http_client import HttpClient
 from ails_intel.runtime import collector_specs, collector_window_days, load_active_config, load_source_specs
 from ails_intel.safe_logger import log_event
@@ -274,6 +275,8 @@ def main():
                 **http.diagnostic_log_fields(),
             )
             run_failure_probes(spec, window, timeout=timeout)
+            if spec.collector_id in {"COL-BIORXIV", "COL-MEDRXIV"}:
+                run_europepmc_probe(spec, window, timeout=timeout)
             continue
 
         status = "PASS"
