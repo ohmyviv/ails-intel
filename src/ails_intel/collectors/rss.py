@@ -61,7 +61,17 @@ def _date(value: str) -> str:
     try:
         return datetime.fromisoformat(normalized).date().isoformat()
     except ValueError:
-        return raw[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", raw) else ""
+        pass
+    # Fierce Biotech currently publishes RSS dates like
+    # "Aug 15, 2026 10:47AM", which is neither RFC 822/1123 nor ISO 8601.
+    # Keep this bounded to explicit human-readable formats rather than using
+    # a permissive date parser that could silently reinterpret ambiguous dates.
+    for fmt in ("%b %d, %Y %I:%M%p", "%B %d, %Y %I:%M%p"):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return raw[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", raw) else ""
 
 
 def parse_feed(xml_text: str) -> list[RawItem]:
