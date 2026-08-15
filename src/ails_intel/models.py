@@ -72,3 +72,4 @@ class CollectorOutcome:
     representative_url: str = ""
     failure_reason: str = ""
     diagnostic_note: str = ""
+    fallback_used: bool = False
