@@ -220,6 +220,7 @@ def main():
                 run_key=run_key,
                 execution_status="failed",
                 error_code=failure_reason,
+                fallback_used=False,
                 **diagnostic_fields,
             )
             continue
@@ -255,12 +256,13 @@ def main():
         total_reactivated += reactivated
 
         hit_count = len(outcome.relevant_items)
+        fallback_used = bool(getattr(outcome, "fallback_used", False))
         coverage.append(CoverageRecord({
             "run_key": run_key, "source_id": spec.source_id, "source_name": source.source_name,
             "source_group": "structured", "route": route_kind, "status": _legacy_status(outcome.execution_status),
             "hit_count": hit_count, "representative_url": outcome.representative_url,
             "failure_reason": outcome.failure_reason, "checked_at_bjt": checked_at,
-            "fallback_used": "FALSE", "notes": outcome.diagnostic_note, "retrieval_status": outcome.execution_status,
+            "fallback_used": "TRUE" if fallback_used else "FALSE", "notes": outcome.diagnostic_note, "retrieval_status": outcome.execution_status,
             "hit_status": "hit" if hit_count else "no_hit",
             "coverage_id": make_coverage_id(run_key, producer_id, "", spec.channel_id, route_id, spec.source_id),
             "attempt_id": "", "producer_id": producer_id, "channel_id": spec.channel_id, "route_id": route_id,
@@ -272,7 +274,7 @@ def main():
             collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key,
             execution_status=outcome.execution_status, saturation_status=outcome.saturation_status,
             results_seen=outcome.results_seen, signal_count=len(new_for_collector), duplicate_count=duplicates,
-            reactivated_count=reactivated, collection_batch_id=batch_id,
+            reactivated_count=reactivated, collection_batch_id=batch_id, fallback_used=fallback_used,
         )
 
     store.reactivate_diagnostic_signals(reactivation_updates)
