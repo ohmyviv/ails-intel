@@ -6,6 +6,7 @@ import pytest
 from ails_intel.collector_diagnostics import (
     DEFAULT_DIAGNOSTIC_COLLECTORS,
     _diagnostic_fields,
+    _xml_structure_fields,
     diagnostic_probe_targets,
     select_specs,
 )
@@ -74,6 +75,23 @@ def test_hitnews_probe_strips_rss_query_from_topic_page():
     assert diagnostic_probe_targets(spec, window) == [
         ("html_topic_probe", "https://www.healthcareitnews.com/topics/artificial-intelligence")
     ]
+
+
+def test_fierce_probe_checks_configured_and_all_stories_feeds():
+    spec = _spec(
+        "COL-FIERCE-RSS",
+        options={"feed_url": "https://www.fiercebiotech.com/rss/biotech/xml"},
+    )
+    window = Window(date(2026, 8, 12), date(2026, 8, 15))
+    assert diagnostic_probe_targets(spec, window) == [
+        ("configured_feed_probe", "https://www.fiercebiotech.com/rss/biotech/xml"),
+        ("all_stories_feed_probe", "https://www.fiercebiotech.com/rss/xml"),
+    ]
+
+
+def test_xml_structure_fields_counts_feed_nodes():
+    fields = _xml_structure_fields("<rss><channel><item/><item/></channel></rss>")
+    assert fields == {"root_tag": "rss", "item_count": 2, "entry_count": 0, "channel_count": 1}
 
 
 def test_openrxiv_probe_uses_explicit_json_and_xml_formats():

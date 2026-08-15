@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -55,6 +56,21 @@ def _diagnostic_fields(http: HttpClient) -> dict[str, object]:
     return fields
 
 
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _xml_structure_fields(text: str) -> dict[str, object]:
+    root = ET.fromstring(text)
+    names = [_local_name(node.tag) for node in root.iter()]
+    return {
+        "root_tag": _local_name(root.tag),
+        "item_count": names.count("item"),
+        "entry_count": names.count("entry"),
+        "channel_count": names.count("channel"),
+    }
+
+
 def diagnostic_probe_targets(spec, window: Window) -> list[tuple[str, str]]:
     """Return safe read-only probes for known structured-source failure modes."""
     if spec.collector_id == "COL-HITNEWS-AI":
@@ -62,6 +78,16 @@ def diagnostic_probe_targets(spec, window: Window) -> list[tuple[str, str]]:
         if feed_url:
             return [("html_topic_probe", feed_url.split("?", 1)[0])]
         return []
+
+    if spec.collector_id == "COL-FIERCE-RSS":
+        feed_url = str(spec.options.get("feed_url", "")).strip()
+        targets = []
+        if feed_url:
+            targets.append(("configured_feed_probe", feed_url))
+        all_feed = "https://www.fiercebiotech.com/rss/xml"
+        if all_feed != feed_url:
+            targets.append(("all_stories_feed_probe", all_feed))
+        return targets
 
     server = {
         "COL-BIORXIV": "biorxiv",
@@ -80,20 +106,38 @@ def run_failure_probes(spec, window: Window, *, timeout: float) -> None:
     for stage, url in diagnostic_probe_targets(spec, window):
         probe_http = HttpClient(timeout=timeout, retries=0)
         try:
-            probe_http.text(url)
+            text = probe_http.text(url)
             fields = probe_http.diagnostic_log_fields()
             empty = int(fields.get("response_bytes", 0) or 0) == 0
+            extra_fields: dict[str, object] = {}
+            error_code = "EMPTY_BODY" if empty else ""
+            status = "DEGRADED" if empty else "PASS"
+            execution_status = "failed" if empty else "complete"
+            if not empty and stage.endswith("feed_probe"):
+                try:
+                    extra_fields = _xml_structure_fields(text)
+                    item_count = int(extra_fields.get("item_count", 0) or 0)
+                    entry_count = int(extra_fields.get("entry_count", 0) or 0)
+                    if item_count + entry_count == 0:
+                        status = "DEGRADED"
+                        execution_status = "partial"
+                        error_code = "NO_FEED_ITEMS"
+                except ET.ParseError:
+                    status = "DEGRADED"
+                    execution_status = "failed"
+                    error_code = "XML_PARSE_ERROR"
             log_event(
                 "collector_diagnostic_probe",
                 component="collector_diagnostics",
                 stage=stage,
-                status="DEGRADED" if empty else "PASS",
+                status=status,
                 collector_id=spec.collector_id,
                 source_id=spec.source_id,
                 channel_id=spec.channel_id,
-                execution_status="failed" if empty else "complete",
-                error_code="EMPTY_BODY" if empty else "",
+                execution_status=execution_status,
+                error_code=error_code,
                 **fields,
+                **extra_fields,
             )
         except Exception as exc:
             log_event(
@@ -209,6 +253,8 @@ def main():
             error_code=outcome.failure_reason if outcome.execution_status != "complete" else "",
             **_diagnostic_fields(http),
         )
+        if outcome.execution_status != "complete":
+            run_failure_probes(spec, window, timeout=timeout)
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     overall_status = "PASS" if failed == 0 and degraded == 0 else "DEGRADED"
