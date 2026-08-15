@@ -5,6 +5,7 @@ import pytest
 
 from ails_intel.collector_diagnostics import (
     DEFAULT_DIAGNOSTIC_COLLECTORS,
+    _date_shape,
     _diagnostic_fields,
     _xml_structure_fields,
     diagnostic_probe_targets,
@@ -66,6 +67,10 @@ def test_success_diagnostics_only_surface_when_retry_happened():
     assert _diagnostic_fields(_FakeHttp(2))["attempt_count"] == 2
 
 
+def test_date_shape_masks_letters_and_digits_but_keeps_structure():
+    assert _date_shape("Fri, 15 Aug 2026 10:02:03 +0000") == "AAA, 99 AAA 9999 99:99:99 +9999"
+
+
 def test_hitnews_probe_strips_rss_query_from_topic_page():
     spec = _spec(
         "COL-HITNEWS-AI",
@@ -105,6 +110,8 @@ def test_xml_structure_fields_counts_field_completeness_using_rss_parser_rules()
     assert fields["date_count"] == 1
     assert fields["complete_count"] == 1
     assert fields["child_tags"] == "guid,link,pubdate,title"
+    assert fields["date_shape"] == "AAA, 99 AAA 9999 99:99:99 AAA"
+    assert fields["date_length"] == 29
 
 
 def test_openrxiv_probe_uses_explicit_json_and_xml_formats():
