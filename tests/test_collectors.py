@@ -61,7 +61,7 @@ def _pubmed_xml() -> str:
 
 def test_pubmed_marks_saturated_filters_locally_and_uses_first_public_date():
     http = FakeHttp(
-        [{"esearchresult": {"count": "3", "idlist": ["1", "2"]}}],
+        [{"esearchresult": {"count": "3", "idlist": [], "webenv": "WE-OLD", "querykey": "1"}}],
         text_response=_pubmed_xml(),
     )
     source = SourceSpec(
@@ -70,15 +70,21 @@ def test_pubmed_marks_saturated_filters_locally_and_uses_first_public_date():
         "P0",
         "site:pubmed.ncbi.nlm.nih.gov (AI OR machine learning) (healthcare OR drug discovery OR biology)",
     )
-    out = PubMedCollector().collect(source=source, window=W, max_results=2, http=http)
+    out = PubMedCollector(scan_budget=2, request_interval_seconds=0).collect(
+        source=source, window=W, max_results=2, http=http,
+    )
     assert out.execution_status == "partial"
     assert out.saturation_status == "saturated"
+    assert out.failure_reason == "scan_budget_exhausted"
     assert out.results_seen == 2
     assert [x.stable_id for x in out.relevant_items] == ["1"]
     assert out.relevant_items[0].published_date == "2026-08-08"
     assert out.relevant_items[0].first_public_at == "2026-08-08"
     assert http.calls[0][1]["datetype"] == "edat"
     assert http.calls[0][1]["sort"] == "pub_date"
+    assert http.calls[0][1]["usehistory"] == "y"
+    assert http.calls[1][1]["WebEnv"] == "WE-OLD"
+    assert http.calls[1][1]["query_key"] == "1"
 
 
 def test_pubmed_precision_gate_filters_reviews_and_nonoriginal_records():
@@ -113,7 +119,7 @@ def test_pubmed_precision_gate_filters_reviews_and_nonoriginal_records():
       </PubmedArticle>
     </PubmedArticleSet>"""
     http = FakeHttp(
-        [{"esearchresult": {"count": "3", "idlist": ["10", "11", "12"]}}],
+        [{"esearchresult": {"count": "3", "idlist": [], "webenv": "WE-GATE", "querykey": "1"}}],
         text_response=xml,
     )
     source = SourceSpec(
@@ -128,7 +134,11 @@ def test_pubmed_precision_gate_filters_reviews_and_nonoriginal_records():
         "original_markers": ["we present", "we develop", "we developed", "we evaluate", "we evaluated", "we validate", "we introduce"],
         "original_abstract_labels": ["methods", "results"],
     }
-    out = PubMedCollector(gate_options=gate).collect(source=source, window=W, max_results=10, http=http)
+    out = PubMedCollector(gate_options=gate, request_interval_seconds=0).collect(
+        source=source, window=W, max_results=10, http=http,
+    )
+    assert out.execution_status == "complete"
+    assert out.saturation_status == "clear"
     assert [x.stable_id for x in out.relevant_items] == ["11"]
     assert "filtered_pubtype=1" in out.diagnostic_note
     assert "filtered_nonoriginal=1" in out.diagnostic_note
