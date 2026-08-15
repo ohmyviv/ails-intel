@@ -9,6 +9,9 @@ from zoneinfo import ZoneInfo
 from ails_intel.auth import build_sheets_readonly_service, spreadsheet_id_from_env
 from ails_intel.collector_runner import _build_collector, _collector_supported, _is_rss_spec
 from ails_intel.collectors.base import Window
+from ails_intel.collectors.rss import _date as rss_date
+from ails_intel.collectors.rss import _link as rss_link
+from ails_intel.collectors.rss import _text as rss_text
 from ails_intel.http_client import HttpClient
 from ails_intel.runtime import collector_specs, collector_window_days, load_active_config, load_source_specs
 from ails_intel.safe_logger import log_event
@@ -63,11 +66,32 @@ def _local_name(tag: str) -> str:
 def _xml_structure_fields(text: str) -> dict[str, object]:
     root = ET.fromstring(text)
     names = [_local_name(node.tag) for node in root.iter()]
+    feed_nodes = [node for node in root.iter() if _local_name(node.tag) in {"item", "entry"}]
+    title_count = 0
+    link_count = 0
+    date_count = 0
+    complete_count = 0
+    for node in feed_nodes:
+        has_title = bool(rss_text(node, {"title"}).strip())
+        has_link = bool(rss_link(node).strip())
+        has_date = bool(rss_date(rss_text(node, {"pubdate", "published", "updated", "date"})))
+        title_count += int(has_title)
+        link_count += int(has_link)
+        date_count += int(has_date)
+        complete_count += int(has_title and has_link and has_date)
+    child_tags = ""
+    if feed_nodes:
+        child_tags = ",".join(sorted({_local_name(child.tag) for child in list(feed_nodes[0])}))
     return {
         "root_tag": _local_name(root.tag),
         "item_count": names.count("item"),
         "entry_count": names.count("entry"),
         "channel_count": names.count("channel"),
+        "title_count": title_count,
+        "link_count": link_count,
+        "date_count": date_count,
+        "complete_count": complete_count,
+        "child_tags": child_tags,
     }
 
 
@@ -118,10 +142,15 @@ def run_failure_probes(spec, window: Window, *, timeout: float) -> None:
                     extra_fields = _xml_structure_fields(text)
                     item_count = int(extra_fields.get("item_count", 0) or 0)
                     entry_count = int(extra_fields.get("entry_count", 0) or 0)
+                    complete_count = int(extra_fields.get("complete_count", 0) or 0)
                     if item_count + entry_count == 0:
                         status = "DEGRADED"
                         execution_status = "partial"
                         error_code = "NO_FEED_ITEMS"
+                    elif complete_count == 0:
+                        status = "DEGRADED"
+                        execution_status = "partial"
+                        error_code = "NO_PARSEABLE_ITEMS"
                 except ET.ParseError:
                     status = "DEGRADED"
                     execution_status = "failed"

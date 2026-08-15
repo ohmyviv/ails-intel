@@ -89,9 +89,22 @@ def test_fierce_probe_checks_configured_and_all_stories_feeds():
     ]
 
 
-def test_xml_structure_fields_counts_feed_nodes():
-    fields = _xml_structure_fields("<rss><channel><item/><item/></channel></rss>")
-    assert fields == {"root_tag": "rss", "item_count": 2, "entry_count": 0, "channel_count": 1}
+def test_xml_structure_fields_counts_field_completeness_using_rss_parser_rules():
+    fields = _xml_structure_fields(
+        """<rss><channel>
+        <item><title>A</title><link>https://example.test/a</link><pubDate>Fri, 15 Aug 2026 10:00:00 GMT</pubDate><guid>a</guid></item>
+        <item><title>B</title><link>https://example.test/b</link><guid>b</guid></item>
+        </channel></rss>"""
+    )
+    assert fields["root_tag"] == "rss"
+    assert fields["item_count"] == 2
+    assert fields["entry_count"] == 0
+    assert fields["channel_count"] == 1
+    assert fields["title_count"] == 2
+    assert fields["link_count"] == 2
+    assert fields["date_count"] == 1
+    assert fields["complete_count"] == 1
+    assert fields["child_tags"] == "guid,link,pubdate,title"
 
 
 def test_openrxiv_probe_uses_explicit_json_and_xml_formats():
