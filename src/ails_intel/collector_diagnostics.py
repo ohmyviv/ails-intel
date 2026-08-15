@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -63,6 +64,11 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1].lower()
 
 
+def _date_shape(value: str) -> str:
+    shaped = re.sub(r"[A-Za-z]", "A", re.sub(r"\d", "9", value or ""))
+    return shaped[:120]
+
+
 def _xml_structure_fields(text: str) -> dict[str, object]:
     root = ET.fromstring(text)
     names = [_local_name(node.tag) for node in root.iter()]
@@ -71,10 +77,14 @@ def _xml_structure_fields(text: str) -> dict[str, object]:
     link_count = 0
     date_count = 0
     complete_count = 0
+    first_date_raw = ""
     for node in feed_nodes:
+        date_raw = rss_text(node, {"pubdate", "published", "updated", "date"})
+        if not first_date_raw and date_raw:
+            first_date_raw = date_raw
         has_title = bool(rss_text(node, {"title"}).strip())
         has_link = bool(rss_link(node).strip())
-        has_date = bool(rss_date(rss_text(node, {"pubdate", "published", "updated", "date"})))
+        has_date = bool(rss_date(date_raw))
         title_count += int(has_title)
         link_count += int(has_link)
         date_count += int(has_date)
@@ -92,6 +102,8 @@ def _xml_structure_fields(text: str) -> dict[str, object]:
         "date_count": date_count,
         "complete_count": complete_count,
         "child_tags": child_tags,
+        "date_shape": _date_shape(first_date_raw),
+        "date_length": len(first_date_raw),
     }
 
 
