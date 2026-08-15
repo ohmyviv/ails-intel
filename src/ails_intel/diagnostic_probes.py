@@ -12,8 +12,7 @@ KNOWN_PREPRINT_DOIS = {
     "COL-BIORXIV": "10.1101/2025.02.13.638084",
     "COL-MEDRXIV": "10.1101/2021.01.22.21250054",
 }
-_TEXT_KEYS = {
-    "title",
+_ALWAYS_TEXT_KEYS = {
     "abstracttext",
     "authorstring",
     "affiliation",
@@ -76,7 +75,10 @@ def _server_match_paths(value, server: str, *, path: str = "") -> set[str]:
     if isinstance(value, dict):
         for key, child in value.items():
             key_text = str(key)
-            if key_text.lower() in _TEXT_KEYS:
+            key_lower = key_text.lower()
+            # Exclude article/free-text fields, but retain nested metadata title
+            # fields such as journalInfo.journal.title.
+            if key_lower in _ALWAYS_TEXT_KEYS or (not path and key_lower == "title"):
                 continue
             child_path = f"{path}.{key_text}" if path else key_text
             matches.update(_server_match_paths(child, server, path=child_path))
