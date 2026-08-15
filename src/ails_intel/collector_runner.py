@@ -173,21 +173,34 @@ def main():
         batch_id = f"COL-{now:%Y%m%d-%H%M}-BJT-{spec.collector_id}"
         checked_at = now.isoformat(timespec="seconds")
 
+        http.clear_diagnostic()
         try:
             outcome = collector.collect(source=source, window=window, max_results=max_results, http=http)
         except Exception as exc:
             failure_reason = type(exc).__name__
+            diagnostic_note = http.diagnostic_note()
+            diagnostic_fields = http.diagnostic_log_fields()
             coverage.append(CoverageRecord({
                 "run_key": run_key, "source_id": spec.source_id, "source_name": source.source_name,
                 "source_group": "structured", "route": route_kind, "status": "failed", "hit_count": 0,
                 "representative_url": "", "failure_reason": failure_reason, "checked_at_bjt": checked_at,
-                "fallback_used": "FALSE", "notes": "", "retrieval_status": "failed", "hit_status": "no_hit",
+                "fallback_used": "FALSE", "notes": diagnostic_note, "retrieval_status": "failed", "hit_status": "no_hit",
                 "coverage_id": make_coverage_id(run_key, producer_id, "", spec.channel_id, route_id, spec.source_id),
                 "attempt_id": "", "producer_id": producer_id, "channel_id": spec.channel_id, "route_id": route_id,
                 "execution_status": "failed", "saturation_status": "unknown", "results_seen": 0,
                 "relevant_signal_count": 0, "schema_version": "v11.0",
             }))
-            log_event("collector", component="collector_runner", status="DEGRADED", collector_id=spec.collector_id, source_id=spec.source_id, run_key=run_key, execution_status="failed", error_code=failure_reason)
+            log_event(
+                "collector",
+                component="collector_runner",
+                status="DEGRADED",
+                collector_id=spec.collector_id,
+                source_id=spec.source_id,
+                run_key=run_key,
+                execution_status="failed",
+                error_code=failure_reason,
+                **diagnostic_fields,
+            )
             continue
 
         new_for_collector = []
