@@ -1,7 +1,7 @@
 from datetime import date
 
 from ails_intel.collectors.base import Window
-from ails_intel.collectors.rss import RssCollector, parse_feed
+from ails_intel.collectors.rss import RssCollector, _date, parse_feed
 from ails_intel.models import SourceSpec
 
 RSS = """<?xml version='1.0'?>
@@ -9,6 +9,17 @@ RSS = """<?xml version='1.0'?>
   <item><title>AI drug discovery partnership expands</title><link>https://example.com/a</link><guid>a</guid><pubDate>Mon, 10 Aug 2026 08:00:00 GMT</pubDate><description>Company signs a funding and partnership deal.</description></item>
   <item><title>General biotech manufacturing update</title><link>https://example.com/b</link><guid>b</guid><pubDate>Sun, 09 Aug 2026 08:00:00 GMT</pubDate><description>No artificial intelligence content.</description></item>
   <item><title>Old AI funding</title><link>https://example.com/c</link><guid>c</guid><pubDate>Thu, 30 Jul 2026 08:00:00 GMT</pubDate><description>AI funding.</description></item>
+</channel></rss>"""
+
+FIERCE_RSS = """<?xml version='1.0'?>
+<rss><channel>
+  <item>
+    <title>AI biotech discovery update</title>
+    <link>https://www.fiercebiotech.com/biotech/example</link>
+    <guid>fierce-1</guid>
+    <pubDate>Aug 15, 2026 10:47AM</pubDate>
+    <description>Artificial intelligence and drug discovery.</description>
+  </item>
 </channel></rss>"""
 
 ATOM = """<?xml version='1.0' encoding='utf-8'?>
@@ -53,6 +64,18 @@ def test_parse_feed_extracts_stable_dated_items():
     items = parse_feed(RSS)
     assert [x.stable_id for x in items] == ["a", "b", "c"]
     assert items[0].published_date == "2026-08-10"
+
+
+def test_date_parses_fierce_current_rss_shape():
+    assert _date("Aug 15, 2026 10:47AM") == "2026-08-15"
+    assert _date("August 15, 2026 10:47AM") == "2026-08-15"
+
+
+def test_parse_feed_supports_fierce_current_pubdate():
+    items = parse_feed(FIERCE_RSS)
+    assert len(items) == 1
+    assert items[0].stable_id == "fierce-1"
+    assert items[0].published_date == "2026-08-15"
 
 
 def test_parse_feed_supports_atom_topic_feeds():
