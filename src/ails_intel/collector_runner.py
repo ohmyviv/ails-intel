@@ -110,6 +110,27 @@ def _legacy_status(execution_status: str) -> str:
     return {"complete": "ok", "partial": "partial", "failed": "failed"}.get(execution_status, execution_status)
 
 
+def _clear_http_diagnostic(http) -> None:
+    clear = getattr(http, "clear_diagnostic", None)
+    if callable(clear):
+        clear()
+
+
+def _http_diagnostic_note(http) -> str:
+    diagnostic = getattr(http, "diagnostic_note", None)
+    if not callable(diagnostic):
+        return ""
+    return str(diagnostic() or "")
+
+
+def _http_diagnostic_log_fields(http) -> dict[str, object]:
+    diagnostic = getattr(http, "diagnostic_log_fields", None)
+    if not callable(diagnostic):
+        return {}
+    fields = diagnostic()
+    return dict(fields) if isinstance(fields, dict) else {}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--collector", action="append", help="Run only the named collector; repeatable")
@@ -173,13 +194,13 @@ def main():
         batch_id = f"COL-{now:%Y%m%d-%H%M}-BJT-{spec.collector_id}"
         checked_at = now.isoformat(timespec="seconds")
 
-        http.clear_diagnostic()
+        _clear_http_diagnostic(http)
         try:
             outcome = collector.collect(source=source, window=window, max_results=max_results, http=http)
         except Exception as exc:
             failure_reason = type(exc).__name__
-            diagnostic_note = http.diagnostic_note()
-            diagnostic_fields = http.diagnostic_log_fields()
+            diagnostic_note = _http_diagnostic_note(http)
+            diagnostic_fields = _http_diagnostic_log_fields(http)
             coverage.append(CoverageRecord({
                 "run_key": run_key, "source_id": spec.source_id, "source_name": source.source_name,
                 "source_group": "structured", "route": route_kind, "status": "failed", "hit_count": 0,
