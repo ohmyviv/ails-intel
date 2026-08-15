@@ -55,6 +55,61 @@ def _diagnostic_fields(http: HttpClient) -> dict[str, object]:
     return fields
 
 
+def diagnostic_probe_targets(spec, window: Window) -> list[tuple[str, str]]:
+    """Return safe read-only probes for known structured-source failure modes."""
+    if spec.collector_id == "COL-HITNEWS-AI":
+        feed_url = str(spec.options.get("feed_url", "")).strip()
+        if feed_url:
+            return [("html_topic_probe", feed_url.split("?", 1)[0])]
+        return []
+
+    server = {
+        "COL-BIORXIV": "biorxiv",
+        "COL-MEDRXIV": "medrxiv",
+    }.get(spec.collector_id)
+    if server:
+        base = f"https://api.biorxiv.org/details/{server}/{window.start.isoformat()}/{window.end.isoformat()}/0"
+        return [
+            ("explicit_json_probe", f"{base}/json"),
+            ("explicit_xml_probe", f"{base}/xml"),
+        ]
+    return []
+
+
+def run_failure_probes(spec, window: Window, *, timeout: float) -> None:
+    for stage, url in diagnostic_probe_targets(spec, window):
+        probe_http = HttpClient(timeout=timeout, retries=0)
+        try:
+            probe_http.text(url)
+            fields = probe_http.diagnostic_log_fields()
+            empty = int(fields.get("response_bytes", 0) or 0) == 0
+            log_event(
+                "collector_diagnostic_probe",
+                component="collector_diagnostics",
+                stage=stage,
+                status="DEGRADED" if empty else "PASS",
+                collector_id=spec.collector_id,
+                source_id=spec.source_id,
+                channel_id=spec.channel_id,
+                execution_status="failed" if empty else "complete",
+                error_code="EMPTY_BODY" if empty else "",
+                **fields,
+            )
+        except Exception as exc:
+            log_event(
+                "collector_diagnostic_probe",
+                component="collector_diagnostics",
+                stage=stage,
+                status="DEGRADED",
+                collector_id=spec.collector_id,
+                source_id=spec.source_id,
+                channel_id=spec.channel_id,
+                execution_status="failed",
+                error_code=type(exc).__name__,
+                **probe_http.diagnostic_log_fields(),
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Read-only structured collector diagnostics")
     parser.add_argument("--collector", action="append", help="Collector ID; repeatable. Use 'all' for every enabled collector.")
@@ -116,7 +171,6 @@ def main():
         configured_days = spec.options.get("window_days", "")
         days = int(float(configured_days)) if str(configured_days).strip() else collector_window_days(cfg, spec.channel_id)
         window = Window(start=(now.date() - timedelta(days=days)), end=now.date())
-        route_kind = "rss" if _is_rss_spec(spec) else "api"
 
         http.clear_diagnostic()
         try:
@@ -134,6 +188,7 @@ def main():
                 error_code=type(exc).__name__,
                 **http.diagnostic_log_fields(),
             )
+            run_failure_probes(spec, window, timeout=timeout)
             continue
 
         status = "PASS"
@@ -151,6 +206,7 @@ def main():
             saturation_status=outcome.saturation_status,
             results_seen=outcome.results_seen,
             signal_count=len(outcome.relevant_items),
+            error_code=outcome.failure_reason if outcome.execution_status != "complete" else "",
             **_diagnostic_fields(http),
         )
 

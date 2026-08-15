@@ -1,12 +1,19 @@
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
 
-from ails_intel.collector_diagnostics import DEFAULT_DIAGNOSTIC_COLLECTORS, _diagnostic_fields, select_specs
+from ails_intel.collector_diagnostics import (
+    DEFAULT_DIAGNOSTIC_COLLECTORS,
+    _diagnostic_fields,
+    diagnostic_probe_targets,
+    select_specs,
+)
+from ails_intel.collectors.base import Window
 
 
-def _spec(collector_id: str):
-    return SimpleNamespace(collector_id=collector_id)
+def _spec(collector_id: str, *, options=None):
+    return SimpleNamespace(collector_id=collector_id, options=dict(options or {}))
 
 
 def test_default_selection_uses_configured_diagnostic_collectors_in_stable_order():
@@ -56,3 +63,25 @@ class _FakeHttp:
 def test_success_diagnostics_only_surface_when_retry_happened():
     assert _diagnostic_fields(_FakeHttp(1)) == {}
     assert _diagnostic_fields(_FakeHttp(2))["attempt_count"] == 2
+
+
+def test_hitnews_probe_strips_rss_query_from_topic_page():
+    spec = _spec(
+        "COL-HITNEWS-AI",
+        options={"feed_url": "https://www.healthcareitnews.com/topics/artificial-intelligence?format=rss"},
+    )
+    window = Window(date(2026, 8, 8), date(2026, 8, 15))
+    assert diagnostic_probe_targets(spec, window) == [
+        ("html_topic_probe", "https://www.healthcareitnews.com/topics/artificial-intelligence")
+    ]
+
+
+def test_openrxiv_probe_uses_explicit_json_and_xml_formats():
+    window = Window(date(2026, 8, 8), date(2026, 8, 15))
+    for collector_id, server in (("COL-BIORXIV", "biorxiv"), ("COL-MEDRXIV", "medrxiv")):
+        targets = diagnostic_probe_targets(_spec(collector_id), window)
+        base = f"https://api.biorxiv.org/details/{server}/2026-08-08/2026-08-15/0"
+        assert targets == [
+            ("explicit_json_probe", f"{base}/json"),
+            ("explicit_xml_probe", f"{base}/xml"),
+        ]
