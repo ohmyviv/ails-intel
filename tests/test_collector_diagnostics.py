@@ -1,0 +1,58 @@
+from types import SimpleNamespace
+
+import pytest
+
+from ails_intel.collector_diagnostics import DEFAULT_DIAGNOSTIC_COLLECTORS, _diagnostic_fields, select_specs
+
+
+def _spec(collector_id: str):
+    return SimpleNamespace(collector_id=collector_id)
+
+
+def test_default_selection_uses_configured_diagnostic_collectors_in_stable_order():
+    specs = [
+        _spec("COL-PUBMED"),
+        _spec("COL-ARXIV"),
+        _spec("COL-HITNEWS-AI"),
+        _spec("COL-BIORXIV"),
+        _spec("COL-MEDRXIV"),
+        _spec("COL-FIERCE-RSS"),
+    ]
+    selected = select_specs(specs, None)
+    expected = [collector_id for collector_id in DEFAULT_DIAGNOSTIC_COLLECTORS if collector_id in {s.collector_id for s in specs}]
+    assert [spec.collector_id for spec in selected] == expected
+
+
+def test_all_selection_preserves_configured_order():
+    specs = [_spec("COL-PUBMED"), _spec("COL-ARXIV")]
+    selected = select_specs(specs, ["all"])
+    assert [spec.collector_id for spec in selected] == ["COL-PUBMED", "COL-ARXIV"]
+
+
+def test_explicit_selection_preserves_request_order_and_deduplicates():
+    specs = [_spec("COL-PUBMED"), _spec("COL-BIORXIV")]
+    selected = select_specs(specs, ["COL-BIORXIV", " COL-PUBMED ", "COL-BIORXIV"])
+    assert [spec.collector_id for spec in selected] == ["COL-BIORXIV", "COL-PUBMED"]
+
+
+def test_unknown_collector_is_rejected():
+    with pytest.raises(ValueError):
+        select_specs([_spec("COL-PUBMED")], ["COL-NOT-CONFIGURED"])
+
+
+class _FakeHttp:
+    def __init__(self, attempts):
+        self.attempts = attempts
+
+    def diagnostic_log_fields(self):
+        return {
+            "http_status": 200,
+            "content_type": "application/json",
+            "response_bytes": 42,
+            "attempt_count": self.attempts,
+        }
+
+
+def test_success_diagnostics_only_surface_when_retry_happened():
+    assert _diagnostic_fields(_FakeHttp(1)) == {}
+    assert _diagnostic_fields(_FakeHttp(2))["attempt_count"] == 2
