@@ -272,6 +272,7 @@ def main():
                 channel_id=spec.channel_id,
                 execution_status="failed",
                 error_code=type(exc).__name__,
+                fallback_used=False,
                 **http.diagnostic_log_fields(),
             )
             run_failure_probes(spec, window, timeout=timeout)
@@ -279,6 +280,7 @@ def main():
                 run_europepmc_probe(spec, window, timeout=timeout)
             continue
 
+        fallback_used = bool(getattr(outcome, "fallback_used", False))
         status = "PASS"
         if outcome.execution_status != "complete":
             status = "DEGRADED"
@@ -295,10 +297,13 @@ def main():
             results_seen=outcome.results_seen,
             signal_count=len(outcome.relevant_items),
             error_code=outcome.failure_reason if outcome.execution_status != "complete" else "",
+            fallback_used=fallback_used,
             **_diagnostic_fields(http),
         )
         if outcome.execution_status != "complete":
             run_failure_probes(spec, window, timeout=timeout)
+            if fallback_used and spec.collector_id in {"COL-BIORXIV", "COL-MEDRXIV"}:
+                run_europepmc_probe(spec, window, timeout=timeout)
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     overall_status = "PASS" if failed == 0 and degraded == 0 else "DEGRADED"
