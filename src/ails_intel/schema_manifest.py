@@ -64,13 +64,15 @@ EXPECTED_HEADERS = {
         "entity_hint","event_type_hint","content_class_hint","matched_signal_ids","matched_candidate_ids",
         "matched_event_key","disposition","miss_type","miss_severity","primary_source_status",
         "canonical_primary_url","source_published_at","first_public_at","event_date","audited_at_bjt",
-        "notes","schema_version"
+        "notes","schema_version","direct_url_status","entity_resolution_status","event_truth_status",
+        "freshness_status","detail_verification_status","verification_confidence","contradiction_evidence",
+        "audit_revision_id","supersedes_revision_id","audit_state"
     ],
 }
 
 MIN_GRID = {
     "Lite_Signals": {"rowCount": 5000, "columnCount": 28, "frozenRowCount": 1},
-    "Lite_ChallengerAudit": {"rowCount": 3000, "columnCount": 28, "frozenRowCount": 1},
+    "Lite_ChallengerAudit": {"rowCount": 3000, "columnCount": 38, "frozenRowCount": 1},
 }
 
 REQUIRED_V11_CONFIG = {
@@ -102,6 +104,13 @@ REQUIRED_V11_CONFIG = {
     "frozen_fingerprint_fields_v11","readback_contract_v11",
     "challenger_audit_enabled","challenger_audit_blocking","challenger_disposition_enum",
     "challenger_primary_source_status_enum","challenger_schema_version",
+    "challenger_direct_url_status_enum","challenger_entity_resolution_status_enum",
+    "challenger_event_truth_status_enum","challenger_freshness_status_enum",
+    "challenger_detail_verification_status_enum","challenger_verification_confidence_enum",
+    "challenger_audit_state_enum","challenger_direct_url_first",
+    "challenger_entity_resolution_gate","challenger_false_claim_requires_contradiction",
+    "challenger_append_only_revisions","worker_due_source_enforcement_enabled",
+    "worker_due_source_roles_json","worker_due_source_priority","worker_due_source_integrity_contract",
 }
 
 VALIDATION_PROBES = {
@@ -130,4 +139,11 @@ VALIDATION_PROBES = {
     "Lite_ChallengerAudit!S2": {"discovery_miss","verification_miss","selection_miss","timing_miss"},
     "Lite_ChallengerAudit!T2": {"critical","material","minor"},
     "Lite_ChallengerAudit!U2": {"verified","unverified","not_found","not_required"},
+    "Lite_ChallengerAudit!AC2": {"inspected","unavailable","not_provided"},
+    "Lite_ChallengerAudit!AD2": {"resolved","ambiguous","unresolved","not_required"},
+    "Lite_ChallengerAudit!AE2": {"confirmed","partial","unresolved","contradicted","not_applicable"},
+    "Lite_ChallengerAudit!AF2": {"confirmed_fresh","stale","unresolved","contradicted","not_applicable"},
+    "Lite_ChallengerAudit!AG2": {"verified","partial","unresolved","contradicted","not_applicable"},
+    "Lite_ChallengerAudit!AH2": {"high","medium","low"},
+    "Lite_ChallengerAudit!AL2": {"current","superseded"},
 }
