@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from datetime import datetime, time
 
+from ails_intel.structured_signal_identity import validate_structured_coverage_signal_identity
+
 
 TERMINAL_COLLECTOR_STATUSES = {"complete", "partial", "failed", "skipped"}
 
@@ -58,13 +60,15 @@ def validate_structured_snapshot_barrier(
     not_before_bjt: object = "18:00:00",
     current_active_signal_count: int | None = None,
     declared_signal_count: object | None = None,
+    active_signal_rows: Iterable[Mapping[str, object]] | None = None,
 ) -> list[str]:
-    """Validate fresh terminal observation of the structured collector snapshot.
+    """Validate fresh terminal observation and structured Signal identity.
 
     ``complete``, ``partial``, ``failed`` and ``skipped`` are all terminal
     observations. A failed/skipped source therefore degrades coverage but does
-    not fail Snapshot Barrier by itself. Missing, duplicate, stale, malformed or
-    non-terminal observations remain fail-closed integrity errors.
+    not fail Snapshot Barrier by itself. Missing, duplicate, stale, malformed,
+    non-terminal, or per-route persisted Signal identity mismatches remain
+    fail-closed integrity errors.
     """
     errors: list[str] = []
     expected = {str(x).strip() for x in expected_collector_ids if str(x).strip()}
@@ -108,6 +112,15 @@ def validate_structured_snapshot_barrier(
             continue
         if checked.date().isoformat() != report_date or checked.time().replace(tzinfo=None) < minimum_clock:
             errors.append("structured_snapshot_stale_collector")
+
+    if active_signal_rows is not None:
+        errors.extend(
+            validate_structured_coverage_signal_identity(
+                run_key=run_key,
+                coverage_rows=structured_rows,
+                active_signals=active_signal_rows,
+            )
+        )
 
     if current_active_signal_count is not None and declared_signal_count is not None:
         try:
