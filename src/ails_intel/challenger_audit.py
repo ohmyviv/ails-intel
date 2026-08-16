@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -35,6 +36,16 @@ CHALLENGER_HEADERS = [
     "audited_at_bjt",
     "notes",
     "schema_version",
+    "direct_url_status",
+    "entity_resolution_status",
+    "event_truth_status",
+    "freshness_status",
+    "detail_verification_status",
+    "verification_confidence",
+    "contradiction_evidence",
+    "audit_revision_id",
+    "supersedes_revision_id",
+    "audit_state",
 ]
 
 CHALLENGER_DISPOSITIONS = {
@@ -48,6 +59,14 @@ CHALLENGER_DISPOSITIONS = {
 MISS_TYPES = {"discovery_miss", "verification_miss", "selection_miss", "timing_miss"}
 MISS_SEVERITIES = {"critical", "material", "minor"}
 PRIMARY_SOURCE_STATUSES = {"verified", "unverified", "not_found", "not_required"}
+DIRECT_URL_STATUSES = {"inspected", "unavailable", "not_provided"}
+ENTITY_RESOLUTION_STATUSES = {"resolved", "ambiguous", "unresolved", "not_required"}
+EVENT_TRUTH_STATUSES = {"confirmed", "partial", "unresolved", "contradicted", "not_applicable"}
+FRESHNESS_STATUSES = {"confirmed_fresh", "stale", "unresolved", "contradicted", "not_applicable"}
+DETAIL_VERIFICATION_STATUSES = {"verified", "partial", "unresolved", "contradicted", "not_applicable"}
+VERIFICATION_CONFIDENCES = {"high", "medium", "low"}
+AUDIT_STATES = {"current", "superseded"}
+REVISION_RE = re.compile(r"-R([1-9]\d*)$")
 
 
 @dataclass(frozen=True)
@@ -86,6 +105,15 @@ def make_challenger_id(report_date: str, provider_id: str, raw_url: str, raw_tit
     return "CHL-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
 
 
+def make_audit_revision_id(challenger_id: str, revision: int) -> str:
+    if revision < 1:
+        raise ValueError("challenger audit revision must be positive")
+    challenger = str(challenger_id or "").strip()
+    if not challenger:
+        raise ValueError("challenger_id is required")
+    return f"{challenger}-R{revision}"
+
+
 def _as_date(value: object) -> date | None:
     text = str(value or "").strip()
     if not text:
@@ -116,6 +144,22 @@ def _int_value(value: object) -> int | None:
         return None
 
 
+def _is_v11_3(row: Mapping[str, object]) -> bool:
+    return str(row.get("schema_version", "")).strip() == "v11.3"
+
+
+def _current_rows(rows: Iterable[Mapping[str, object]]) -> list[Mapping[str, object]]:
+    materialized = list(rows)
+    out: list[Mapping[str, object]] = []
+    for row in materialized:
+        if _is_v11_3(row):
+            if str(row.get("audit_state", "")).strip() == "current":
+                out.append(row)
+        else:
+            out.append(row)
+    return out
+
+
 def validate_challenger_row(
     row: Mapping[str, object],
     *,
@@ -134,6 +178,7 @@ def validate_challenger_row(
     challenger_id = str(row.get("challenger_id", "")).strip()
     disposition = str(row.get("disposition", "")).strip()
     primary_status = str(row.get("primary_source_status", "")).strip()
+    schema_version = str(row.get("schema_version", "")).strip()
 
     for field, value in (
         ("report_date", row_report_date),
@@ -142,7 +187,6 @@ def validate_challenger_row(
         ("provider_id", provider_id),
         ("received_at_bjt", str(row.get("received_at_bjt", "")).strip()),
         ("raw_title", raw_title),
-        ("raw_url", raw_url),
         ("audited_at_bjt", str(row.get("audited_at_bjt", "")).strip()),
     ):
         if not value:
@@ -155,20 +199,21 @@ def validate_challenger_row(
     if run_key and row_run_key != run_key:
         errors.append("challenger_run_key_mismatch")
 
-    if challenger_id:
+    if not challenger_id:
+        errors.append("challenger_missing_challenger_id")
+    elif challenger_id.startswith("CHL-"):
         expected_id = make_challenger_id(row_report_date, provider_id, raw_url, raw_title)
         if challenger_id != expected_id:
             errors.append("challenger_id_mismatch")
-    else:
-        errors.append("challenger_missing_challenger_id")
+    elif not challenger_id.startswith("CHAL-"):
+        errors.append("challenger_id_format_invalid")
 
     if disposition not in CHALLENGER_DISPOSITIONS:
         errors.append("challenger_invalid_disposition")
     if primary_status not in PRIMARY_SOURCE_STATUSES:
         errors.append("challenger_invalid_primary_source_status")
-
-    if str(row.get("schema_version", "")).strip() != "v11.2":
-        errors.append("challenger_schema_version_not_v11_2")
+    if schema_version not in {"v11.2", "v11.3"}:
+        errors.append("challenger_schema_version_unsupported")
 
     received = _as_datetime(row.get("received_at_bjt"))
     audited = _as_datetime(row.get("audited_at_bjt"))
@@ -183,6 +228,74 @@ def validate_challenger_row(
     first_public = _as_date(row.get("first_public_at"))
     event_date = _as_date(row.get("event_date"))
 
+    if _is_v11_3(row):
+        direct_url_status = str(row.get("direct_url_status", "")).strip()
+        entity_status = str(row.get("entity_resolution_status", "")).strip()
+        truth_status = str(row.get("event_truth_status", "")).strip()
+        freshness_status = str(row.get("freshness_status", "")).strip()
+        detail_status = str(row.get("detail_verification_status", "")).strip()
+        confidence = str(row.get("verification_confidence", "")).strip()
+        contradiction = str(row.get("contradiction_evidence", "")).strip()
+        revision_id = str(row.get("audit_revision_id", "")).strip()
+        supersedes = str(row.get("supersedes_revision_id", "")).strip()
+        audit_state = str(row.get("audit_state", "")).strip()
+
+        if direct_url_status not in DIRECT_URL_STATUSES:
+            errors.append("challenger_invalid_direct_url_status")
+        if entity_status not in ENTITY_RESOLUTION_STATUSES:
+            errors.append("challenger_invalid_entity_resolution_status")
+        if truth_status not in EVENT_TRUTH_STATUSES:
+            errors.append("challenger_invalid_event_truth_status")
+        if freshness_status not in FRESHNESS_STATUSES:
+            errors.append("challenger_invalid_freshness_status")
+        if detail_status not in DETAIL_VERIFICATION_STATUSES:
+            errors.append("challenger_invalid_detail_verification_status")
+        if confidence not in VERIFICATION_CONFIDENCES:
+            errors.append("challenger_invalid_verification_confidence")
+        if audit_state not in AUDIT_STATES:
+            errors.append("challenger_invalid_audit_state")
+
+        if raw_url and direct_url_status not in {"inspected", "unavailable"}:
+            errors.append("challenger_raw_url_not_inspected_first")
+        if not raw_url and direct_url_status != "not_provided":
+            errors.append("challenger_direct_url_status_without_raw_url")
+
+        revision_match = REVISION_RE.search(revision_id)
+        if not revision_match or not revision_id.startswith(f"{challenger_id}-R"):
+            errors.append("challenger_invalid_audit_revision_id")
+        if supersedes:
+            prior_match = REVISION_RE.search(supersedes)
+            if not prior_match or not supersedes.startswith(f"{challenger_id}-R"):
+                errors.append("challenger_invalid_supersedes_revision_id")
+            elif revision_match and int(prior_match.group(1)) >= int(revision_match.group(1)):
+                errors.append("challenger_supersedes_not_earlier_revision")
+
+        if disposition == "false_or_inaccurate_claim":
+            if entity_status not in {"resolved", "not_required"}:
+                errors.append("false_claim_entity_not_resolved")
+            if not contradiction:
+                errors.append("false_claim_missing_contradiction_evidence")
+            if "contradicted" not in {truth_status, freshness_status, detail_status}:
+                errors.append("false_claim_without_contradicted_dimension")
+
+        if disposition == "evidence_insufficient":
+            unresolved = (
+                entity_status in {"ambiguous", "unresolved"}
+                or truth_status in {"partial", "unresolved"}
+                or freshness_status == "unresolved"
+                or detail_status in {"partial", "unresolved"}
+            )
+            if not unresolved:
+                errors.append("evidence_insufficient_without_unresolved_dimension")
+
+        if disposition == "confirmed_miss":
+            if truth_status != "confirmed":
+                errors.append("confirmed_miss_event_not_confirmed")
+            if freshness_status != "confirmed_fresh":
+                errors.append("confirmed_miss_freshness_not_confirmed")
+            if confidence not in {"high", "medium"}:
+                errors.append("confirmed_miss_confidence_too_low")
+
     if disposition == "confirmed_miss":
         miss_type = str(row.get("miss_type", "")).strip()
         severity = str(row.get("miss_severity", "")).strip()
@@ -190,10 +303,10 @@ def validate_challenger_row(
             errors.append("confirmed_miss_missing_or_invalid_type")
         if severity not in MISS_SEVERITIES:
             errors.append("confirmed_miss_missing_or_invalid_severity")
-        if primary_status != "verified":
-            errors.append("confirmed_miss_primary_not_verified")
+        if primary_status not in {"verified", "unverified"}:
+            errors.append("confirmed_miss_evidence_not_verified_or_attributed")
         if not str(row.get("canonical_primary_url", "")).strip():
-            errors.append("confirmed_miss_missing_primary_url")
+            errors.append("confirmed_miss_missing_evidence_url")
         if first_public is None and event_date is None:
             errors.append("confirmed_miss_missing_time_provenance")
 
@@ -227,9 +340,6 @@ def validate_challenger_row(
         elif underlying >= claimed_source and not str(row.get("matched_event_key", "")).strip():
             errors.append("stale_resurfacing_not_proven_stale")
 
-    if disposition == "evidence_insufficient" and primary_status == "verified":
-        errors.append("evidence_insufficient_marked_verified")
-
     return sorted(set(errors))
 
 
@@ -237,7 +347,7 @@ def summarize_confirmed_misses(rows: Iterable[Mapping[str, object]]) -> Challeng
     confirmed = 0
     critical = 0
     material = 0
-    for row in rows:
+    for row in _current_rows(rows):
         if str(row.get("disposition", "")).strip() != "confirmed_miss":
             continue
         confirmed += 1
@@ -260,7 +370,9 @@ def validate_challenger_audit_snapshot(
 ) -> list[str]:
     errors: list[str] = []
     materialized = list(rows)
-    ids: set[str] = set()
+    legacy_ids: set[str] = set()
+    revision_ids: set[str] = set()
+    current_by_challenger: dict[str, int] = {}
 
     for row in materialized:
         errors.extend(
@@ -273,10 +385,22 @@ def validate_challenger_audit_snapshot(
             )
         )
         challenger_id = str(row.get("challenger_id", "")).strip()
-        if challenger_id:
-            if challenger_id in ids:
+        if _is_v11_3(row):
+            revision_id = str(row.get("audit_revision_id", "")).strip()
+            if revision_id:
+                if revision_id in revision_ids:
+                    errors.append("duplicate_challenger_audit_revision_id")
+                revision_ids.add(revision_id)
+            if challenger_id and str(row.get("audit_state", "")).strip() == "current":
+                current_by_challenger[challenger_id] = current_by_challenger.get(challenger_id, 0) + 1
+        elif challenger_id:
+            if challenger_id in legacy_ids:
                 errors.append("duplicate_challenger_id")
-            ids.add(challenger_id)
+            legacy_ids.add(challenger_id)
+
+    for count in current_by_challenger.values():
+        if count != 1:
+            errors.append("challenger_current_revision_count_not_one")
 
     if run_row is not None:
         summary = summarize_confirmed_misses(materialized)
