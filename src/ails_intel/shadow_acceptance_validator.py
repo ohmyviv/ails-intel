@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import re
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from ails_intel.auth import build_sheets_service, spreadsheet_id_from_env
 from ails_intel.runtime import load_active_config
 from ails_intel.safe_logger import log_event
 from ails_intel.shadow_acceptance import evaluate_shadow_acceptance
+from ails_intel.source_route_integrity import reconcile_due_source_routes
+from ails_intel.source_schedule import due_source_route_ids
 from ails_intel.state.sheets import SheetsStore
 from ails_intel.unified_ingestion import required_worker_routes
 
@@ -31,6 +33,10 @@ def _run_key(cfg: dict[str, object], report_date: str) -> str:
     minute = int(float(cfg.get("report_cutoff_minute_bjt", 30)))
     prefix = str(cfg.get("shadow_run_prefix", "AILS11S"))
     return f"{prefix}-{token}-{hour:02d}{minute:02d}-BJT"
+
+
+def _enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"true", "1", "yes"}
 
 
 def main() -> None:
@@ -80,6 +86,44 @@ def main() -> None:
     daily_items = store.daily_item_rows(run_key)
     event_index = store.event_index_rows()
 
+    due_errors: list[str] = []
+    due_required_count = 0
+    due_completed_count = 0
+    due_incomplete_count = 0
+    if _enabled(cfg.get("worker_due_source_enforcement_enabled")):
+        source_rows = store.dict_rows("SourceRegistry!A:AA")
+        roles_raw = cfg.get("worker_due_source_roles_json", []) or []
+        roles = roles_raw if isinstance(roles_raw, (list, tuple, set)) else []
+        due_routes = due_source_route_ids(
+            source_rows=source_rows,
+            local_date=date.fromisoformat(report_date),
+            allowed_roles=roles,
+            required_priority=str(cfg.get("worker_due_source_priority", "P0")),
+        )
+        due_check = reconcile_due_source_routes(
+            run_key=run_key,
+            attempt_id=attempt_id,
+            due_source_route_ids=due_routes,
+            audit_rows=audits,
+            coverage_rows=coverage,
+        )
+        due_errors.extend(due_check.errors)
+        due_required_count = due_check.required_route_count
+        due_completed_count = due_check.completed_route_count
+        due_incomplete_count = due_check.incomplete_route_count
+
+        matching_run = next(
+            (
+                row
+                for row in run_rows
+                if str(row.get("run_key", "")).strip() == run_key
+                and str(row.get("attempt_id", "")).strip() == attempt_id
+            ),
+            {},
+        )
+        if due_incomplete_count and str(matching_run.get("coverage_confidence", "")).strip().upper() == "HIGH":
+            due_errors.append("due_source_incomplete_but_coverage_high")
+
     result = evaluate_shadow_acceptance(
         report_date=report_date,
         run_key=run_key,
@@ -96,14 +140,16 @@ def main() -> None:
         enforce_continuation=True if args.enforce_continuation else None,
     )
     metrics = result.metrics
+    combined_errors = tuple(sorted(set(result.errors) | set(due_errors)))
+    ledger_verdict = "PASS" if result.ledger_verdict == "PASS" and not combined_errors else "FAIL"
     log_event(
         "shadow_acceptance_validation",
         component="shadow_acceptance_validator",
         stage="post_run",
-        status=result.ledger_verdict,
+        status=ledger_verdict,
         run_key=run_key,
         attempt_id=attempt_id,
-        ledger_verdict=result.ledger_verdict,
+        ledger_verdict=ledger_verdict,
         source_failure_path=result.source_failure_path,
         archive_check=str(metrics.get("archive_check", "EXTERNAL_REQUIRED")),
         coverage_confidence=str(metrics.get("coverage_confidence", "")),
@@ -114,10 +160,13 @@ def main() -> None:
         frozen_item_count=int(metrics.get("frozen_item_count", 0) or 0),
         route_count=int(metrics.get("required_worker_route_count", 0) or 0),
         coverage_row_count=int(metrics.get("worker_or_rescue_coverage_count", 0) or 0),
-        error_code="" if not result.errors else result.errors[0],
-        error_count=len(result.errors),
+        due_source_required_count=due_required_count,
+        due_source_completed_count=due_completed_count,
+        due_source_incomplete_count=due_incomplete_count,
+        error_code="" if not combined_errors else combined_errors[0],
+        error_count=len(combined_errors),
     )
-    raise SystemExit(0 if result.ledger_verdict == "PASS" else 1)
+    raise SystemExit(0 if ledger_verdict == "PASS" else 1)
 
 
 if __name__ == "__main__":
