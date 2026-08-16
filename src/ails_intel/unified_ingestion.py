@@ -11,6 +11,7 @@ from ails_intel.worker_contract import parse_signal_ids
 WORKER_PRODUCERS = {"chatgpt/worker", "chatgpt/rescue"}
 VALID_CHANNELS = {"C1", "C2", "C3", "C4", "C5", "C6"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
+VALID_CORE_HINTS = {"TRUE", "FALSE", "UNKNOWN"}
 
 
 def _date_token(run_key: str) -> str:
@@ -45,6 +46,8 @@ def build_worker_signal(
     asset_hint: str = "",
     event_key_hint: str = "",
     priority_hint: str = "",
+    ai_core_hint: str = "TRUE",
+    life_science_core_hint: str = "TRUE",
     notes: str = "",
 ) -> SignalRecord:
     if producer_id not in WORKER_PRODUCERS:
@@ -58,6 +61,10 @@ def build_worker_signal(
     priority = str(priority_hint or default_worker_priority(channel_id)).strip()
     if priority not in VALID_PRIORITIES:
         raise ValueError("invalid worker signal priority")
+    ai_core = str(ai_core_hint or "").strip().upper()
+    life_science_core = str(life_science_core_hint or "").strip().upper()
+    if ai_core not in VALID_CORE_HINTS or life_science_core not in VALID_CORE_HINTS:
+        raise ValueError("invalid worker signal core hint")
 
     key_source = str(source_id).strip() or "unregistered_web"
     published_for_key = str(published_at or first_public_at or event_date).strip()
@@ -87,8 +94,8 @@ def build_worker_signal(
             "signal_key": key,
             "event_key_hint": event_key_hint,
             "priority_hint": priority,
-            "ai_core_hint": "TRUE",
-            "life_science_core_hint": "TRUE",
+            "ai_core_hint": ai_core,
+            "life_science_core_hint": life_science_core,
             "signal_state": "active",
             "notes": notes,
             "schema_version": "v11.0",
