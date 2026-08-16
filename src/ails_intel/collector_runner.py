@@ -14,7 +14,14 @@ from ails_intel.collectors.pubmed import PubMedCollector
 from ails_intel.collectors.rss import RssCollector
 from ails_intel.http_client import HttpClient
 from ails_intel.models import CoverageRecord, SignalRecord
-from ails_intel.runtime import build_run_key, collector_specs, collector_window_days, load_active_config, load_source_specs
+from ails_intel.runtime import (
+    collector_specs,
+    collector_window_days,
+    load_active_config,
+    load_source_specs,
+    resolve_report_date,
+    resolve_run_key,
+)
 from ails_intel.safe_logger import log_event
 from ails_intel.signal_keys import make_coverage_id, make_signal_id, make_signal_key
 from ails_intel.state.sheets import SheetsStore
@@ -140,6 +147,16 @@ def _http_diagnostic_log_fields(http) -> dict[str, object]:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--collector", action="append", help="Run only the named collector; repeatable")
+    parser.add_argument(
+        "--manual-run-key",
+        default="",
+        help="Explicit isolated Shadow namespace for a diagnostic/manual rerun",
+    )
+    parser.add_argument(
+        "--report-date",
+        default="",
+        help="Report date YYYY-MM-DD for collection windows; defaults to current Beijing date",
+    )
     args = parser.parse_args()
 
     started = time.monotonic()
@@ -156,7 +173,19 @@ def main():
         raise SystemExit(1)
 
     now = _now(str(cfg["timezone"].value))
-    run_key = build_run_key(cfg, now)
+    try:
+        report_day = resolve_report_date(args.report_date, now)
+        run_key = resolve_run_key(cfg, now, args.manual_run_key)
+    except RuntimeError:
+        log_event(
+            "structured_collectors",
+            component="collector_runner",
+            status="FAIL",
+            error_code="INVALID_MANUAL_RUN_CONTEXT",
+            error_count=1,
+        )
+        raise SystemExit(1)
+
     specs = collector_specs(cfg)
     configured_ids = {s.collector_id for s in specs}
     unsupported = {s.collector_id for s in specs if not _collector_supported(s)}
@@ -207,7 +236,7 @@ def main():
         max_results = int(limits.get(spec.collector_id, cfg["collector_default_max_results"].value))
         configured_days = spec.options.get("window_days", "")
         days = int(float(configured_days)) if str(configured_days).strip() else collector_window_days(cfg, spec.channel_id)
-        window = Window(start=(now.date() - timedelta(days=days)), end=now.date())
+        window = Window(start=(report_day - timedelta(days=days)), end=report_day)
         producer_id = f"collector/{spec.collector_id}"
         is_rss = _is_rss_spec(spec)
         route_kind = "rss" if is_rss else "api"
@@ -261,7 +290,7 @@ def main():
             key, signal = _signal(
                 item, run_key=run_key, batch_id=batch_id, producer_id=producer_id,
                 channel_id=spec.channel_id, route_id=route_id, source_id=spec.source_id,
-                discovery_method=route_kind, discovered_at=checked_at, date_token=now.strftime("%Y%m%d"),
+                discovery_method=route_kind, discovered_at=checked_at, date_token=report_day.strftime("%Y%m%d"),
             )
             record = existing_records.get(key)
             action = existing_signal_action(record)
@@ -347,6 +376,8 @@ def main():
     log_event(
         "structured_collectors", component="collector_runner",
         status="PASS" if failed == 0 else "DEGRADED", run_key=run_key,
+        report_date=report_day.isoformat(),
+        run_type="manual_rerun" if args.manual_run_key else "scheduled_or_dispatch",
         signal_count=len(all_new), duplicate_count=total_duplicates,
         reactivated_count=total_reactivated, error_count=failed, elapsed_ms=elapsed_ms,
     )

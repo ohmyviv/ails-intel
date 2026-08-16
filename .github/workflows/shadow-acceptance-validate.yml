@@ -7,6 +7,11 @@ on:
         description: "Beijing report date (YYYY-MM-DD)"
         required: true
         type: string
+      run_key:
+        description: "Optional explicit run_key for an isolated manual rerun"
+        required: false
+        type: string
+        default: ""
       attempt:
         description: "Optional fully-qualified Shadow attempt ID; blank uses latest"
         required: false
@@ -23,7 +28,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: ails-shadow-acceptance-${{ inputs.date }}
+  group: ails-shadow-acceptance-${{ inputs.run_key || inputs.date }}
   cancel-in-progress: false
 
 jobs:
@@ -50,11 +55,15 @@ jobs:
         env:
           AILS_SPREADSHEET_ID: ${{ secrets.AILS_SPREADSHEET_ID }}
           REPORT_DATE: ${{ inputs.date }}
+          RUN_KEY: ${{ inputs.run_key || '' }}
           ATTEMPT_ID: ${{ inputs.attempt || '' }}
           ENFORCE_CONTINUATION: ${{ inputs.enforce_continuation || false }}
         shell: bash
         run: |
           args=(--date "$REPORT_DATE")
+          if [ -n "$RUN_KEY" ]; then
+            args+=(--run-key "$RUN_KEY")
+          fi
           if [ -n "$ATTEMPT_ID" ]; then
             args+=(--attempt "$ATTEMPT_ID")
           fi
