@@ -35,6 +35,13 @@ def test_candidate_id_is_deterministic():
     assert make_candidate_id(RUN_KEY, ATTEMPT, delta) == make_candidate_id(RUN_KEY, ATTEMPT, delta)
 
 
+def test_manual_shadow_candidate_id_keeps_report_date_token():
+    run_key = "AILS11M-20260816-2302-BJT"
+    attempt = run_key + "-A1"
+    candidate_id = make_candidate_id(run_key, attempt, "subject|research_breakthrough|math|reported|v1")
+    assert candidate_id.startswith("CAN-20260816-")
+
+
 def test_pending_candidate_requires_complete_watch_fields():
     errors = validate_candidate(candidate(disposition="pending", priority_class="P2"))
     assert "pending_requires_p0_or_p1" in errors
@@ -58,6 +65,37 @@ def test_shadow_snapshot_passes_candidate_only_boundary():
         run_rows=[{
             "run_key": RUN_KEY,
             "attempt_id": ATTEMPT,
+            "state_status": "verified",
+            "delivery_status": "not_started",
+            "canonical_attempt": "",
+            "candidate_count": 1,
+            "schema_version": "v11.0",
+        }],
+        daily_items=[],
+        event_index_rows=[],
+    )
+    assert errors == []
+
+
+def test_manual_shadow_snapshot_uses_same_referential_contract():
+    run_key = "AILS11M-20260816-2302-BJT"
+    attempt = run_key + "-A1"
+    delta = "subject|research_breakthrough|math|reported|v1"
+    row = candidate(
+        candidate_id=make_candidate_id(run_key, attempt, delta),
+        run_key=run_key,
+        attempt_id=attempt,
+        delta_key=delta,
+        event_key_v11="subject|research_breakthrough|math",
+    )
+    errors = validate_shadow_worker_snapshot(
+        run_key=run_key,
+        attempt_id=attempt,
+        active_signals=[{"signal_id": "SIG-20260809-abc", "signal_state": "active"}],
+        candidates=[row],
+        run_rows=[{
+            "run_key": run_key,
+            "attempt_id": attempt,
             "state_status": "verified",
             "delivery_status": "not_started",
             "canonical_attempt": "",
