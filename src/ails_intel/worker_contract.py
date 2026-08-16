@@ -4,7 +4,11 @@ import hashlib
 import re
 from collections.abc import Iterable, Mapping
 
-SHADOW_RUN_RE = re.compile(r"^AILS11S-(\d{8})-\d{4}-BJT$")
+# Both scheduled Shadow (AILS11S) and isolated manual Shadow (AILS11M) are
+# non-production ledger identities. Manual runs remain diagnostic evidence and
+# are distinguished by run_type/acceptance semantics, not by weakening the
+# referential-integrity contract.
+SHADOW_RUN_RE = re.compile(r"^AILS11[SM]-(\d{8})-\d{4}-BJT$")
 ATTEMPT_RE = re.compile(r"-A(\d+)$")
 CANDIDATE_DISPOSITIONS = {"selected", "rejected", "pending", "expired", "superseded"}
 PRIORITIES = {"P0", "P1", "P2"}
