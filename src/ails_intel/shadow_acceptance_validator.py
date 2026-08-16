@@ -45,6 +45,7 @@ def main() -> None:
         description="Read-only v11 Shadow post-run ledger acceptance validator"
     )
     parser.add_argument("--date", help="Beijing report date YYYY-MM-DD")
+    parser.add_argument("--run-key", help="Explicit run_key, including isolated manual-rerun namespaces")
     parser.add_argument("--attempt", help="Fully-qualified Shadow attempt ID")
     parser.add_argument(
         "--enforce-continuation",
@@ -59,7 +60,7 @@ def main() -> None:
     cfg = {key: entry.value for key, entry in active_cfg.items()}
     tz = ZoneInfo(str(cfg.get("timezone", "Asia/Shanghai")))
     report_date = args.date or datetime.now(tz).date().isoformat()
-    run_key = _run_key(cfg, report_date)
+    run_key = str(args.run_key or _run_key(cfg, report_date)).strip()
 
     run_rows = store.run_rows(run_key)
     attempt_id = str(args.attempt or _latest_attempt(run_rows)).strip()

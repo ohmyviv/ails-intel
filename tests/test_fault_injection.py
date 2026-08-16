@@ -99,7 +99,16 @@ def test_single_source_timeout_degrades_batch_but_does_not_stop_remaining_collec
     monkeypatch.setattr(collector_runner, "spreadsheet_id_from_env", lambda: "test-sheet")
     monkeypatch.setattr(collector_runner, "SheetsStore", lambda service, spreadsheet_id: store)
     monkeypatch.setattr(collector_runner, "load_active_config", lambda store: cfg)
-    monkeypatch.setattr(collector_runner, "build_run_key", lambda cfg, now: "AILS11S-FI")
+    monkeypatch.setattr(
+        collector_runner,
+        "resolve_run_key",
+        lambda cfg, now, manual_run_key="": "AILS11S-FI",
+    )
+    monkeypatch.setattr(
+        collector_runner,
+        "resolve_report_date",
+        lambda report_date, now: now.date(),
+    )
     monkeypatch.setattr(collector_runner, "collector_specs", lambda cfg: specs)
     monkeypatch.setattr(collector_runner, "load_source_specs", lambda store, ids: sources)
     monkeypatch.setattr(collector_runner, "collector_window_days", lambda cfg, channel_id: 2)

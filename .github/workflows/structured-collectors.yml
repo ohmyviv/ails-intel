@@ -8,11 +8,26 @@ on:
     - cron: "47 10 * * *"
   workflow_dispatch:
     inputs:
+      manual_run_key:
+        description: "Required isolated Shadow run_key for a manual rerun"
+        required: true
+        type: string
+      report_date:
+        description: "Report date YYYY-MM-DD for the manual rerun"
+        required: true
+        type: string
       collector:
         description: "Optional single collector ID (blank = all enabled collectors)"
         required: false
         type: string
         default: ""
+  # Connector/bootstrap path for an explicitly requested manual rerun when a
+  # workflow-dispatch client is unavailable. Merely changing collector code does
+  # not trigger this path; an operator must intentionally touch the marker.
+  push:
+    branches: [main]
+    paths:
+      - ".github/manual-structured-rerun.trigger"
 
 permissions:
   contents: read
@@ -45,6 +60,9 @@ jobs:
       - name: Run deterministic structured collectors
         env:
           AILS_SPREADSHEET_ID: ${{ secrets.AILS_SPREADSHEET_ID }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_RUN_KEY_INPUT: ${{ inputs.manual_run_key || '' }}
+          REPORT_DATE_INPUT: ${{ inputs.report_date || '' }}
           COLLECTOR: ${{ inputs.collector || '' }}
         shell: bash
         run: |
@@ -52,4 +70,19 @@ jobs:
           if [ -n "$COLLECTOR" ]; then
             args+=(--collector "$COLLECTOR")
           fi
+
+          if [ "$EVENT_NAME" = "push" ]; then
+            report_date="$(TZ=Asia/Shanghai date +%F)"
+            manual_run_key="AILS11M-$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)-BJT"
+            args+=(--manual-run-key "$manual_run_key" --report-date "$report_date")
+            echo "MANUAL_RERUN_RUN_KEY=$manual_run_key"
+            echo "MANUAL_RERUN_REPORT_DATE=$report_date"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -z "$MANUAL_RUN_KEY_INPUT" ] || [ -z "$REPORT_DATE_INPUT" ]; then
+              echo "manual_run_key and report_date are required for workflow_dispatch" >&2
+              exit 2
+            fi
+            args+=(--manual-run-key "$MANUAL_RUN_KEY_INPUT" --report-date "$REPORT_DATE_INPUT")
+          fi
+
           python -m ails_intel.collector_runner "${args[@]}"
