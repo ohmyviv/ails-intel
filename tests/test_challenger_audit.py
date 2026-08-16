@@ -206,6 +206,51 @@ def test_duplicate_revision_id_is_rejected():
     assert "duplicate_challenger_audit_revision_id" in errors
 
 
+def test_all_superseded_revisions_are_rejected_without_one_current_revision():
+    first = row(audit_state="superseded")
+    second = row(
+        challenger_id=first["challenger_id"],
+        audit_revision_id=make_audit_revision_id(first["challenger_id"], 2),
+        supersedes_revision_id=first["audit_revision_id"],
+        audit_state="superseded",
+    )
+    errors = validate_challenger_audit_snapshot(
+        rows=[first, second],
+        report_date="2026-08-13",
+        run_key="AILS11S-20260813-2030-BJT",
+    )
+    assert "challenger_current_revision_count_not_one" in errors
+
+
+def test_supersedes_reference_must_exist_in_snapshot():
+    current = row(
+        audit_revision_id=make_audit_revision_id(
+            make_challenger_id(
+                "2026-08-13",
+                "external-tool-a",
+                "https://example.com/news/item",
+                "Example life-science financing event",
+            ),
+            2,
+        ),
+        supersedes_revision_id=make_audit_revision_id(
+            make_challenger_id(
+                "2026-08-13",
+                "external-tool-a",
+                "https://example.com/news/item",
+                "Example life-science financing event",
+            ),
+            1,
+        ),
+    )
+    errors = validate_challenger_audit_snapshot(
+        rows=[current],
+        report_date="2026-08-13",
+        run_key="AILS11S-20260813-2030-BJT",
+    )
+    assert "challenger_supersedes_revision_missing" in errors
+
+
 def test_snapshot_reconciles_run_counts_using_current_revisions_only():
     critical = row(raw_title="Critical miss", raw_url="https://example.com/critical", miss_severity="critical")
     material = row(raw_title="Material miss", raw_url="https://example.com/material", miss_severity="material")
