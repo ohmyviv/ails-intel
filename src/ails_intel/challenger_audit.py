@@ -372,7 +372,9 @@ def validate_challenger_audit_snapshot(
     materialized = list(rows)
     legacy_ids: set[str] = set()
     revision_ids: set[str] = set()
+    v11_3_challenger_ids: set[str] = set()
     current_by_challenger: dict[str, int] = {}
+    supersedes_refs: set[str] = set()
 
     for row in materialized:
         errors.extend(
@@ -386,11 +388,16 @@ def validate_challenger_audit_snapshot(
         )
         challenger_id = str(row.get("challenger_id", "")).strip()
         if _is_v11_3(row):
+            if challenger_id:
+                v11_3_challenger_ids.add(challenger_id)
             revision_id = str(row.get("audit_revision_id", "")).strip()
             if revision_id:
                 if revision_id in revision_ids:
                     errors.append("duplicate_challenger_audit_revision_id")
                 revision_ids.add(revision_id)
+            supersedes = str(row.get("supersedes_revision_id", "")).strip()
+            if supersedes:
+                supersedes_refs.add(supersedes)
             if challenger_id and str(row.get("audit_state", "")).strip() == "current":
                 current_by_challenger[challenger_id] = current_by_challenger.get(challenger_id, 0) + 1
         elif challenger_id:
@@ -398,9 +405,12 @@ def validate_challenger_audit_snapshot(
                 errors.append("duplicate_challenger_id")
             legacy_ids.add(challenger_id)
 
-    for count in current_by_challenger.values():
-        if count != 1:
+    for challenger_id in v11_3_challenger_ids:
+        if current_by_challenger.get(challenger_id, 0) != 1:
             errors.append("challenger_current_revision_count_not_one")
+    for supersedes in supersedes_refs:
+        if supersedes not in revision_ids:
+            errors.append("challenger_supersedes_revision_missing")
 
     if run_row is not None:
         summary = summarize_confirmed_misses(materialized)
