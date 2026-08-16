@@ -25,6 +25,14 @@ class _FakeStore:
     def signal_key_records(self, run_key):
         return {}
 
+    def active_signals(self, run_key):
+        return [
+            dict(signal.values)
+            for signal in self.signals
+            if str(signal.values.get("run_key", "")) == run_key
+            and str(signal.values.get("signal_state", "")) == "active"
+        ]
+
     def latest_source_signals(self, source_id, exclude_run_key=None):
         return {}
 
