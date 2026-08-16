@@ -12,6 +12,7 @@ from ails_intel.shadow_acceptance import evaluate_shadow_acceptance
 from ails_intel.source_route_integrity import reconcile_due_source_routes
 from ails_intel.source_schedule import due_source_route_ids
 from ails_intel.state.sheets import SheetsStore
+from ails_intel.structured_signal_identity import validate_structured_coverage_signal_identity
 from ails_intel.unified_ingestion import required_worker_routes
 
 ATTEMPT_RE = re.compile(r"-A(\d+)$")
@@ -86,6 +87,12 @@ def main() -> None:
     daily_items = store.daily_item_rows(run_key)
     event_index = store.event_index_rows()
 
+    identity_errors = validate_structured_coverage_signal_identity(
+        run_key=run_key,
+        coverage_rows=coverage,
+        active_signals=signals,
+    )
+
     due_errors: list[str] = []
     due_required_count = 0
     due_completed_count = 0
@@ -140,7 +147,7 @@ def main() -> None:
         enforce_continuation=True if args.enforce_continuation else None,
     )
     metrics = result.metrics
-    combined_errors = tuple(sorted(set(result.errors) | set(due_errors)))
+    combined_errors = tuple(sorted(set(result.errors) | set(due_errors) | set(identity_errors)))
     ledger_verdict = "PASS" if result.ledger_verdict == "PASS" and not combined_errors else "FAIL"
     log_event(
         "shadow_acceptance_validation",
