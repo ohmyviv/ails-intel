@@ -18,6 +18,12 @@ from ails_intel.runtime import build_run_key, collector_specs, collector_window_
 from ails_intel.safe_logger import log_event
 from ails_intel.signal_keys import make_coverage_id, make_signal_id, make_signal_key
 from ails_intel.state.sheets import SheetsStore
+from ails_intel.structured_signal_identity import (
+    assign_persisted_relevant_signal_counts,
+    make_structured_route_identity,
+    reconcile_expected_structured_signal_sets,
+    structured_active_signal_sets,
+)
 
 FIXED_COLLECTOR_IDS = {"COL-PUBMED", "COL-ARXIV", "COL-BIORXIV", "COL-MEDRXIV", "COL-CTGOV"}
 DIAGNOSTIC_INVALIDATION_NOTE = "diagnostic_first_run_pre_sprint2.1"
@@ -171,6 +177,21 @@ def main():
     retries = int(float(cfg["collector_retry_limit"].value))
     http = HttpClient(timeout=timeout, retries=retries)
     existing_records = store.signal_key_records(run_key)
+    initial_active_signals = store.active_signals(run_key)
+    expected_signal_sets, initial_identity_errors = structured_active_signal_sets(
+        run_key=run_key,
+        active_signals=initial_active_signals,
+    )
+    if initial_identity_errors:
+        log_event(
+            "structured_collectors",
+            component="collector_runner",
+            status="FAIL",
+            run_key=run_key,
+            error_code="STRUCTURED_SIGNAL_IDENTITY_INVALID_PRESTATE",
+            error_count=len(initial_identity_errors),
+        )
+        raise SystemExit(1)
 
     coverage = []
     all_new = []
@@ -191,6 +212,13 @@ def main():
         is_rss = _is_rss_spec(spec)
         route_kind = "rss" if is_rss else "api"
         route_id = f"{route_kind}/{spec.collector_id}"
+        route_identity = make_structured_route_identity(
+            producer_id,
+            spec.channel_id,
+            route_id,
+            spec.source_id,
+        )
+        expected_route_signal_keys = expected_signal_sets.setdefault(route_identity, set())
         batch_id = f"COL-{now:%Y%m%d-%H%M}-BJT-{spec.collector_id}"
         checked_at = now.isoformat(timespec="seconds")
 
@@ -239,16 +267,20 @@ def main():
             action = existing_signal_action(record)
             if action == "duplicate":
                 duplicates += 1
+                if str((record or {}).get("state", "")).strip() == "active":
+                    expected_route_signal_keys.add(key)
                 continue
             if action == "reactivate":
                 row_idx = int(record["row"])
                 reactivation_updates.append((row_idx, effective_priority))
                 record["state"] = "active"
                 record["notes"] = "revalidated_after_sprint2.1"
+                expected_route_signal_keys.add(key)
                 reactivated += 1
                 continue
 
             existing_records[key] = {"row": 0, "state": "active", "notes": str(getattr(item, "notes", "") or "")}
+            expected_route_signal_keys.add(key)
             new_for_collector.append(signal)
 
         all_new.extend(new_for_collector)
@@ -267,7 +299,7 @@ def main():
             "coverage_id": make_coverage_id(run_key, producer_id, "", spec.channel_id, route_id, spec.source_id),
             "attempt_id": "", "producer_id": producer_id, "channel_id": spec.channel_id, "route_id": route_id,
             "execution_status": outcome.execution_status, "saturation_status": outcome.saturation_status,
-            "results_seen": outcome.results_seen, "relevant_signal_count": hit_count, "schema_version": "v11.0",
+            "results_seen": outcome.results_seen, "relevant_signal_count": 0, "schema_version": "v11.0",
         }))
         log_event(
             "collector", component="collector_runner", status="PASS" if outcome.execution_status != "failed" else "DEGRADED",
@@ -279,6 +311,36 @@ def main():
 
     store.reactivate_diagnostic_signals(reactivation_updates)
     store.append_signals(all_new)
+
+    persisted_active_signals = store.active_signals(run_key)
+    persisted_signal_sets, identity_errors = structured_active_signal_sets(
+        run_key=run_key,
+        active_signals=persisted_active_signals,
+    )
+    identity_errors.extend(
+        reconcile_expected_structured_signal_sets(
+            expected_signal_sets=expected_signal_sets,
+            persisted_signal_sets=persisted_signal_sets,
+        )
+    )
+    identity_errors.extend(
+        assign_persisted_relevant_signal_counts(
+            coverage_records=coverage,
+            persisted_signal_sets=persisted_signal_sets,
+        )
+    )
+    identity_errors = sorted(set(identity_errors))
+    if identity_errors:
+        log_event(
+            "structured_collectors",
+            component="collector_runner",
+            status="FAIL",
+            run_key=run_key,
+            error_code="STRUCTURED_SIGNAL_IDENTITY_RECONCILIATION_FAILED",
+            error_count=len(identity_errors),
+        )
+        raise SystemExit(1)
+
     store.upsert_coverage(coverage)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     failed = sum(1 for r in coverage if r.values.get("execution_status") == "failed")
@@ -290,7 +352,8 @@ def main():
     )
     # Per-source collection failure is a coverage degradation, not a transaction
     # integrity failure. Diagnostics are already persisted above, so downstream
-    # Worker Search must remain available to compensate.
+    # Worker Search must remain available to compensate. Signal-set persistence
+    # mismatches fail earlier and do not get mislabeled as source degradation.
     raise SystemExit(0)
 
 
