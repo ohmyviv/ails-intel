@@ -78,6 +78,28 @@ def test_worker_signal_and_coverage_form_one_auditable_route():
     assert errors == []
 
 
+def test_worker_signal_can_truthfully_mark_broad_science_outside_life_science_core():
+    signal = build_worker_signal(
+        run_key=RUN,
+        attempt_id=ATTEMPT,
+        batch_id="WORKER-SCIENCE",
+        producer_id="chatgpt/worker",
+        discovered_at_bjt="2026-08-10T21:00:00+08:00",
+        channel_id="C1",
+        route_id="worker/plan/SCIENCE",
+        source_id="SRC-X",
+        discovery_method="web_search",
+        title="AI advances an open mathematics result",
+        snippet="major-media evidence",
+        url="https://example.com/math",
+        published_at="2026-08-10",
+        ai_core_hint="TRUE",
+        life_science_core_hint="FALSE",
+    ).values
+    assert signal["ai_core_hint"] == "TRUE"
+    assert signal["life_science_core_hint"] == "FALSE"
+
+
 def test_complete_channel_cannot_hide_missing_route():
     errors = validate_unified_ingestion_snapshot(
         run_key=RUN,
