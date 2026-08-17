@@ -25,3 +25,20 @@ The read-only Shadow acceptance validator also accepts an explicit `--run-key`, 
 ## Historical immutability
 
 A diagnostic rerun must never edit the failed scheduled attempt being investigated. The scheduled run, its attempt row, and its pre-fix Coverage/Signal evidence remain immutable forensic evidence.
+
+## Frozen Structured input for downstream-only replay
+
+A downstream-only manual replay may consume a previously persisted scheduled Structured snapshot without rerunning or cloning its collector rows. This is an explicit authorization, not a general relaxation of cross-run referential integrity.
+
+The unified-ingestion validator accepts a frozen Structured input only when all of the following are true:
+
+- the consumer is an isolated manual Shadow identity (`AILS11M-*`);
+- the source is a scheduled Shadow identity (`AILS11S-*`);
+- source and consumer have the same report-date token;
+- the source attempt is fully qualified (`<source_run>-A<n>`);
+- the supplied fingerprint matches the fresh-read active `collector/*` Signals plus Structured Coverage for that exact run/attempt;
+- only active `collector/*` Signals are imported into the Candidate reference scope.
+
+Source-run `chatgpt/worker` and `chatgpt/rescue` Signals are never inherited. A manual replay therefore uses the scheduled Structured snapshot as immutable upstream input while requiring all Worker/Rescue evidence to belong to the new manual attempt.
+
+If the authorization is missing, incomplete, wrong-day, non-scheduled, or fingerprint-drifted, the validator fails closed and the cross-run Structured Signals remain unavailable to Candidate linkage.
