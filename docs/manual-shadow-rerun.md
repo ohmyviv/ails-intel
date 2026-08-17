@@ -42,3 +42,18 @@ The unified-ingestion validator accepts a frozen Structured input only when all 
 Source-run `chatgpt/worker` and `chatgpt/rescue` Signals are never inherited. A manual replay therefore uses the scheduled Structured snapshot as immutable upstream input while requiring all Worker/Rescue evidence to belong to the new manual attempt.
 
 If the authorization is missing, incomplete, wrong-day, non-scheduled, or fingerprint-drifted, the validator fails closed and the cross-run Structured Signals remain unavailable to Candidate linkage.
+
+## Pre-contract legacy Structured snapshots
+
+Some immutable historical scheduled snapshots were persisted before Structured collector rows carried attempt-level provenance. Those rows may have a valid scheduled `run_key` while `Lite_Signals.origin_attempt_id` and `Lite_SourceCoverage.attempt_id` are blank. Historical rows must not be backfilled merely to make a replay pass.
+
+`legacy_frozen_replay` provides a separate, explicit compatibility adapter for this case. It does not relax the normal unified-ingestion validator. The adapter may qualify a legacy snapshot only when all of the following are true:
+
+- the source is an `AILS11S-*` scheduled Shadow and the requested source attempt is fully qualified;
+- fresh-read durable `Lite_Runs` evidence contains exactly one attempt for that source run, and it is the requested attempt;
+- every active source `collector/*` Signal has blank `origin_attempt_id` and every source Structured Coverage row has blank `attempt_id`; mixed old/new provenance fails closed;
+- Signal identity is unique and complete, Coverage route identity is unique and complete, and per-route persisted active Signal counts exactly match `relevant_signal_count` using `(producer_id, channel_id, route_id, source_id)`;
+- the caller supplies a fingerprint of the historical rows exactly as persisted, and it matches a fresh recomputation;
+- source-run Worker/Rescue Signals remain excluded.
+
+On success the adapter creates attempt-qualified copies only in memory and computes the fingerprint expected by the unchanged strict frozen-input validator. It never edits the historical scheduled Run, Signal, Coverage, Candidate, DailyItems, or EventIndex ledgers. Any ambiguity in source attempt identity, provenance, route reconciliation, or fingerprint fails closed.
