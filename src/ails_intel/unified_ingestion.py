@@ -3,15 +3,19 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Mapping
 
-from ails_intel.models import CoverageRecord, SignalRecord
+from ails_intel.models import COVERAGE_HEADERS, SIGNAL_HEADERS, CoverageRecord, SignalRecord
 from ails_intel.signal_keys import make_coverage_id, make_signal_id, make_signal_key
 from ails_intel.snapshot_policy import enabled_structured_collector_ids
-from ails_intel.worker_contract import parse_signal_ids
+from ails_intel.worker_contract import SHADOW_RUN_RE, parse_signal_ids
 
 WORKER_PRODUCERS = {"chatgpt/worker", "chatgpt/rescue"}
 VALID_CHANNELS = {"C1", "C2", "C3", "C4", "C5", "C6"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
 VALID_CORE_HINTS = {"TRUE", "FALSE", "UNKNOWN"}
+
+
+def _text(value: object) -> str:
+    return str(value or "").strip()
 
 
 def _date_token(run_key: str) -> str:
@@ -195,6 +199,134 @@ def _coverage_key(row: Mapping[str, object]) -> tuple[str, str, str]:
     )
 
 
+def structured_snapshot_fingerprint(
+    *,
+    run_key: str,
+    attempt_id: str,
+    active_signals: Iterable[Mapping[str, object]],
+    coverage_rows: Iterable[Mapping[str, object]],
+) -> str:
+    """Fingerprint one persisted Structured snapshot for isolated replay.
+
+    The fingerprint locks both active ``collector/*`` Signal rows and their
+    Structured Coverage rows. It is intentionally scoped to one run/attempt so
+    a manual diagnostic replay can reference an immutable scheduled input
+    without cloning those rows into the manual namespace.
+    """
+    signal_lines: list[str] = []
+    for row in active_signals:
+        if _text(row.get("run_key")) != run_key:
+            continue
+        if _text(row.get("origin_attempt_id")) != attempt_id:
+            continue
+        if _text(row.get("signal_state")) != "active":
+            continue
+        if not _text(row.get("producer_id")).startswith("collector/"):
+            continue
+        signal_lines.append("S|" + "\x1f".join(_text(row.get(header)) for header in SIGNAL_HEADERS))
+
+    coverage_lines: list[str] = []
+    for row in coverage_rows:
+        if _text(row.get("run_key")) != run_key:
+            continue
+        if _text(row.get("attempt_id")) != attempt_id:
+            continue
+        if not _text(row.get("producer_id")).startswith("collector/"):
+            continue
+        coverage_lines.append("C|" + "\x1f".join(_text(row.get(header)) for header in COVERAGE_HEADERS))
+
+    payload = "\n".join(sorted(signal_lines) + sorted(coverage_lines)).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _authorized_frozen_structured_signals(
+    *,
+    run_key: str,
+    active_signals: Iterable[Mapping[str, object]],
+    coverage_rows: Iterable[Mapping[str, object]],
+    frozen_structured_run_key: str,
+    frozen_structured_attempt_id: str,
+    frozen_structured_fingerprint: str,
+) -> tuple[dict[str, Mapping[str, object]], list[str]]:
+    """Return the only cross-run Signals an isolated manual replay may consume.
+
+    Authorization is fail-closed: it must be explicit, originate from the
+    scheduled Shadow namespace on the same report date, match one qualified
+    attempt and fingerprint, and include only active Structured collector
+    Signals. Worker/Rescue rows from the source run are never imported.
+    """
+    requested = any(
+        _text(value)
+        for value in (
+            frozen_structured_run_key,
+            frozen_structured_attempt_id,
+            frozen_structured_fingerprint,
+        )
+    )
+    if not requested:
+        return {}, []
+
+    errors: list[str] = []
+    source_run = _text(frozen_structured_run_key)
+    source_attempt = _text(frozen_structured_attempt_id)
+    expected_fingerprint = _text(frozen_structured_fingerprint)
+
+    if not all((source_run, source_attempt, expected_fingerprint)):
+        return {}, ["frozen_structured_input_incomplete"]
+    if not SHADOW_RUN_RE.match(run_key) or not run_key.startswith("AILS11M-"):
+        errors.append("frozen_structured_input_requires_manual_shadow")
+    if not SHADOW_RUN_RE.match(source_run) or not source_run.startswith("AILS11S-"):
+        errors.append("frozen_structured_source_not_scheduled_shadow")
+    if _date_token(run_key) != _date_token(source_run):
+        errors.append("frozen_structured_report_date_mismatch")
+    if not source_attempt.startswith(f"{source_run}-A"):
+        errors.append("frozen_structured_attempt_not_qualified")
+
+    source_rows = [
+        row
+        for row in active_signals
+        if _text(row.get("run_key")) == source_run
+        and _text(row.get("origin_attempt_id")) == source_attempt
+        and _text(row.get("signal_state")) == "active"
+        and _text(row.get("producer_id")).startswith("collector/")
+    ]
+    source_coverage = [
+        row
+        for row in coverage_rows
+        if _text(row.get("run_key")) == source_run
+        and _text(row.get("attempt_id")) == source_attempt
+        and _text(row.get("producer_id")).startswith("collector/")
+    ]
+    if not source_rows:
+        errors.append("frozen_structured_input_has_no_active_signals")
+    if not source_coverage:
+        errors.append("frozen_structured_input_has_no_coverage")
+
+    actual_fingerprint = structured_snapshot_fingerprint(
+        run_key=source_run,
+        attempt_id=source_attempt,
+        active_signals=source_rows,
+        coverage_rows=source_coverage,
+    )
+    if expected_fingerprint != actual_fingerprint:
+        errors.append("frozen_structured_snapshot_fingerprint_mismatch")
+
+    by_id: dict[str, Mapping[str, object]] = {}
+    for row in source_rows:
+        signal_id = _text(row.get("signal_id"))
+        if not signal_id:
+            errors.append("frozen_structured_signal_id_missing")
+            continue
+        if signal_id in by_id:
+            errors.append("frozen_structured_duplicate_signal_id")
+            continue
+        by_id[signal_id] = row
+
+    if errors:
+        return {}, sorted(set(errors))
+    return by_id, []
+
+
 def validate_unified_ingestion_snapshot(
     *,
     run_key: str,
@@ -204,6 +336,9 @@ def validate_unified_ingestion_snapshot(
     coverage_rows: Iterable[Mapping[str, object]],
     required_routes: Mapping[str, set[str]],
     channel_health: Mapping[str, str] | None = None,
+    frozen_structured_run_key: str = "",
+    frozen_structured_attempt_id: str = "",
+    frozen_structured_fingerprint: str = "",
 ) -> list[str]:
     errors: list[str] = []
     signals = list(active_signals)
@@ -211,16 +346,33 @@ def validate_unified_ingestion_snapshot(
     coverage = list(coverage_rows)
     channel_health = channel_health or {}
 
-    active_by_id = {
+    current_active_by_id = {
         str(row.get("signal_id", "")).strip(): row
         for row in signals
         if str(row.get("run_key", "")).strip() == run_key
         and str(row.get("signal_state", "")).strip() == "active"
         and str(row.get("signal_id", "")).strip()
     }
+    frozen_active_by_id, frozen_errors = _authorized_frozen_structured_signals(
+        run_key=run_key,
+        active_signals=signals,
+        coverage_rows=coverage,
+        frozen_structured_run_key=frozen_structured_run_key,
+        frozen_structured_attempt_id=frozen_structured_attempt_id,
+        frozen_structured_fingerprint=frozen_structured_fingerprint,
+    )
+    errors.extend(frozen_errors)
+
+    active_by_id = dict(current_active_by_id)
+    if not frozen_errors:
+        for signal_id, row in frozen_active_by_id.items():
+            # Preserve the current-run row if a stable same-day Signal ID is
+            # independently rediscovered during the manual Worker replay.
+            active_by_id.setdefault(signal_id, row)
+
     worker_signals = [
         row
-        for row in active_by_id.values()
+        for row in current_active_by_id.values()
         if str(row.get("producer_id", "")).strip() in WORKER_PRODUCERS
         and str(row.get("origin_attempt_id", "")).strip() == attempt_id
     ]
