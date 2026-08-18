@@ -171,7 +171,14 @@ def qualify_legacy_frozen_structured_snapshot(
             continue
         coverage_route_counts[route_key] = count
 
-    if signal_route_counts != coverage_route_counts:
+    # Coverage is the authoritative route universe. A legitimate zero-hit route
+    # naturally has no Signal rows, so absence from signal_route_counts means 0.
+    # Taking the union preserves fail-closed behavior for orphan Signal routes.
+    route_universe = set(signal_route_counts) | set(coverage_route_counts)
+    if any(
+        signal_route_counts.get(route_key, 0) != coverage_route_counts.get(route_key, 0)
+        for route_key in route_universe
+    ):
         errors.append("legacy_frozen_route_signal_count_mismatch")
 
     actual_persisted = legacy_structured_snapshot_fingerprint(
