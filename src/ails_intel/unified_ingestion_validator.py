@@ -7,6 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ails_intel.auth import build_sheets_service, spreadsheet_id_from_env
+from ails_intel.candidate_lineage import validate_candidate_signal_lineage
 from ails_intel.runtime import load_active_config
 from ails_intel.safe_logger import log_event
 from ails_intel.snapshot_policy import (
@@ -113,6 +114,13 @@ def main() -> None:
         required_routes=required,
         channel_health=channel_health,
     )
+    errors.extend(
+        validate_candidate_signal_lineage(
+            candidates=candidates,
+            active_signals=active_signals,
+        )
+    )
+    errors = sorted(set(errors))
 
     if _enabled(cfg.get("collector_snapshot_barrier_enabled"), default=True):
         errors.extend(
