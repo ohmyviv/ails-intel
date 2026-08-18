@@ -21,6 +21,7 @@ from ails_intel.unified_ingestion import (
     required_worker_routes,
     validate_unified_ingestion_snapshot,
 )
+from ails_intel.worker_audit import validate_worker_audit_snapshot
 
 ATTEMPT_RE = re.compile(r"-A(\d+)$")
 
@@ -49,6 +50,13 @@ def _enabled(value: object, default: bool = True) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _worker_audit_required(cfg: dict[str, object], report_date: str) -> bool:
+    if not _enabled(cfg.get("worker_route_audit_enabled"), default=False):
+        return False
+    effective_date = str(cfg.get("worker_route_audit_effective_date", "") or "").strip()
+    return not effective_date or report_date >= effective_date
 
 
 def main() -> None:
@@ -114,6 +122,22 @@ def main() -> None:
         required_routes=required,
         channel_health=channel_health,
     )
+
+    if _worker_audit_required(cfg, report_date):
+        audit_rows = store.dict_rows("Lite_WorkerAudit!A:AB")
+        max_result_rows = int(float(cfg.get("worker_route_audit_max_result_rows_per_route", 5) or 5))
+        errors.extend(
+            validate_worker_audit_snapshot(
+                run_key=run_key,
+                attempt_id=attempt_id,
+                audit_rows=audit_rows,
+                coverage_rows=coverage,
+                active_signals=active_signals,
+                required_routes=required,
+                max_result_rows_per_route=max_result_rows,
+            )
+        )
+
     errors.extend(
         validate_candidate_signal_lineage(
             candidates=candidates,
