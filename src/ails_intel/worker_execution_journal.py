@@ -29,7 +29,7 @@ RESULT_IDENTITY_FIELDS = ("result_title", "result_url", "result_source")
 RESULT_ROW_EVIDENCE_FIELDS = (
     "channel_id",
     "route_id",
-    "record_type",
+    "row_type",
     "result_rank",
     "result_title",
     "result_url",
@@ -312,7 +312,7 @@ def materialize_route_result_rows(
             **base,
             "channel_id": summary["channel_id"],
             "route_id": summary["route_id"],
-            "record_type": "result_row",
+            "row_type": "result",
             "result_rank": rank,
             "result_title": _text(event.get("result_title")),
             "result_url": _text(event.get("result_url")),
