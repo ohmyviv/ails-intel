@@ -245,7 +245,7 @@ def test_materialize_route_result_rows_is_deterministic(tmp_path):
     assert [row["result_rank"] for row in rows] == [3, 2, 5, 4, 1]
     assert rows[0]["signal_id"] == "SIG-3"
     assert rows[3]["opened"] is True
-    assert all(row["record_type"] == "result_row" for row in rows)
+    assert all(row["row_type"] == "result" for row in rows)
 
 
 def test_result_rows_cannot_be_rewritten_from_memory(tmp_path):
