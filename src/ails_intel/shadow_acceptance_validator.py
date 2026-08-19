@@ -14,6 +14,7 @@ from ails_intel.source_schedule import due_source_route_ids
 from ails_intel.state.sheets import SheetsStore
 from ails_intel.structured_signal_identity import validate_structured_coverage_signal_identity
 from ails_intel.unified_ingestion import required_worker_routes
+from ails_intel.worker_checkpoint import build_g2_route_handoff
 
 ATTEMPT_RE = re.compile(r"-A(\d+)$")
 
@@ -52,6 +53,11 @@ def main() -> None:
         action="store_true",
         help="Enforce source-failure -> Worker continuation even before the 2026-08-15 natural-policy date",
     )
+    parser.add_argument(
+        "--allow-legacy-g2-route-aliases",
+        action="store_true",
+        help="Allow the narrow sealed-G2 worker/broad/N compatibility bridge for historical manual checkpoints",
+    )
     args = parser.parse_args()
 
     service = build_sheets_service()
@@ -80,7 +86,7 @@ def main() -> None:
         raise SystemExit(1)
 
     entity_rows = store.dict_rows("Entities!A:V")
-    required = required_worker_routes(cfg, entity_rows)
+    base_required = required_worker_routes(cfg, entity_rows)
     signals = store.active_signals(run_key)
     candidates = store.candidate_rows(run_key, attempt_id)
     coverage = store.coverage_rows(run_key)
@@ -95,6 +101,7 @@ def main() -> None:
     )
 
     due_errors: list[str] = []
+    due_routes: set[str] = set()
     due_required_count = 0
     due_completed_count = 0
     due_incomplete_count = 0
@@ -132,6 +139,16 @@ def main() -> None:
         if due_incomplete_count and str(matching_run.get("coverage_confidence", "")).strip().upper() == "HIGH":
             due_errors.append("due_source_incomplete_but_coverage_high")
 
+    handoff = build_g2_route_handoff(
+        run_key=run_key,
+        attempt_id=attempt_id,
+        base_required_routes=base_required,
+        due_source_route_ids=due_routes,
+        audit_rows=audits,
+        allow_legacy_broad_aliases=args.allow_legacy_g2_route_aliases,
+    )
+    required = handoff.required_routes
+
     result = evaluate_shadow_acceptance(
         report_date=report_date,
         run_key=run_key,
@@ -148,8 +165,11 @@ def main() -> None:
         enforce_continuation=True if args.enforce_continuation else None,
     )
     metrics = result.metrics
-    combined_errors = tuple(sorted(set(result.errors) | set(due_errors) | set(identity_errors)))
+    combined_errors = tuple(
+        sorted(set(result.errors) | set(due_errors) | set(identity_errors) | set(handoff.errors))
+    )
     ledger_verdict = "PASS" if result.ledger_verdict == "PASS" and not combined_errors else "FAIL"
+    base_route_count = sum(len(routes) for routes in base_required.values())
     log_event(
         "shadow_acceptance_validation",
         component="shadow_acceptance_validator",
@@ -166,11 +186,14 @@ def main() -> None:
         worker_signal_count=int(metrics.get("worker_signal_count", 0) or 0),
         candidate_count=int(metrics.get("candidate_count", 0) or 0),
         frozen_item_count=int(metrics.get("frozen_item_count", 0) or 0),
+        base_route_count=base_route_count,
         route_count=int(metrics.get("required_worker_route_count", 0) or 0),
         coverage_row_count=int(metrics.get("worker_or_rescue_coverage_count", 0) or 0),
         due_source_required_count=due_required_count,
         due_source_completed_count=due_completed_count,
         due_source_incomplete_count=due_incomplete_count,
+        due_route_extension_count=handoff.due_extension_count,
+        legacy_alias_count=handoff.legacy_alias_count,
         error_code="" if not combined_errors else combined_errors[0],
         error_count=len(combined_errors),
     )
