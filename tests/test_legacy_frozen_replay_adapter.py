@@ -1,6 +1,8 @@
 import pytest
 
 from ails_intel.legacy_frozen_replay import (
+    LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN,
+    LEGACY_PROVENANCE_DURABLE_RUN_LEDGER,
     legacy_structured_snapshot_fingerprint,
     qualify_legacy_frozen_structured_snapshot,
 )
@@ -68,7 +70,15 @@ def _coverage(*, count=1, route="api/COL-PUBMED", source="SRC-040"):
     }
 
 
-def _qualify(signals, coverage, *, attempts=(ATTEMPT,), fingerprint=None):
+def _qualify(
+    signals,
+    coverage,
+    *,
+    source_attempt=ATTEMPT,
+    attempts=(ATTEMPT,),
+    fingerprint=None,
+    attestation="",
+):
     persisted = fingerprint or legacy_structured_snapshot_fingerprint(
         run_key=RUN,
         active_signals=signals,
@@ -76,11 +86,12 @@ def _qualify(signals, coverage, *, attempts=(ATTEMPT,), fingerprint=None):
     )
     return qualify_legacy_frozen_structured_snapshot(
         source_run_key=RUN,
-        source_attempt_id=ATTEMPT,
+        source_attempt_id=source_attempt,
         source_attempt_ids=attempts,
         active_signals=signals,
         coverage_rows=coverage,
         expected_persisted_fingerprint=persisted,
+        source_provenance_attestation=attestation,
     )
 
 
@@ -95,6 +106,7 @@ def test_legacy_adapter_qualifies_in_memory_without_mutating_history():
     assert qualified.coverage_rows[0]["attempt_id"] == ATTEMPT
     assert qualified.persisted_fingerprint.startswith("sha256:")
     assert qualified.qualified_fingerprint.startswith("sha256:")
+    assert qualified.provenance_mode == LEGACY_PROVENANCE_DURABLE_RUN_LEDGER
 
 
 def test_qualified_legacy_snapshot_passes_unchanged_strict_frozen_validator():
@@ -119,6 +131,68 @@ def test_qualified_legacy_snapshot_passes_unchanged_strict_frozen_validator():
 def test_legacy_adapter_requires_exactly_one_matching_durable_source_attempt():
     with pytest.raises(ValueError, match="legacy_frozen_source_attempt_not_unique"):
         _qualify([_signal()], [_coverage()], attempts=(ATTEMPT, RUN + "-A2"))
+
+
+def test_legacy_adapter_requires_explicit_attestation_when_durable_run_is_missing():
+    with pytest.raises(
+        ValueError,
+        match="legacy_frozen_missing_durable_attempt_attestation_required",
+    ):
+        _qualify([_signal()], [_coverage()], attempts=())
+
+
+def test_legacy_adapter_attests_missing_durable_run_without_mutating_history():
+    signal = _signal()
+    coverage = _coverage()
+    qualified = _qualify(
+        [signal],
+        [coverage],
+        attempts=(),
+        attestation=LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN,
+    )
+
+    assert signal["origin_attempt_id"] == ""
+    assert coverage["attempt_id"] == ""
+    assert qualified.active_signals[0]["origin_attempt_id"] == ATTEMPT
+    assert qualified.coverage_rows[0]["attempt_id"] == ATTEMPT
+    assert qualified.provenance_mode == LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN
+
+
+def test_legacy_adapter_attestation_cannot_override_durable_attempt_conflict():
+    with pytest.raises(ValueError, match="legacy_frozen_source_attempt_not_unique"):
+        _qualify(
+            [_signal()],
+            [_coverage()],
+            attempts=(RUN + "-A2",),
+            attestation=LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN,
+        )
+
+
+def test_legacy_adapter_rejects_attestation_when_matching_durable_attempt_exists():
+    with pytest.raises(
+        ValueError,
+        match="legacy_frozen_attestation_requires_missing_durable_attempt",
+    ):
+        _qualify(
+            [_signal()],
+            [_coverage()],
+            attempts=(ATTEMPT,),
+            attestation=LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN,
+        )
+
+
+def test_legacy_adapter_attested_missing_run_uses_deterministic_a1_alias():
+    with pytest.raises(
+        ValueError,
+        match="legacy_frozen_attested_attempt_alias_must_be_a1",
+    ):
+        _qualify(
+            [_signal()],
+            [_coverage()],
+            source_attempt=RUN + "-A2",
+            attempts=(),
+            attestation=LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN,
+        )
 
 
 def test_legacy_adapter_rejects_mixed_signal_attempt_provenance():

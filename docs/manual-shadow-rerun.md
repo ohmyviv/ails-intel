@@ -47,16 +47,22 @@ If the authorization is missing, incomplete, wrong-day, non-scheduled, or finger
 
 Some immutable historical scheduled snapshots were persisted before Structured collector rows carried attempt-level provenance. Those rows may have a valid scheduled `run_key` while `Lite_Signals.origin_attempt_id` and `Lite_SourceCoverage.attempt_id` are blank. Historical rows must not be backfilled merely to make a replay pass.
 
-`legacy_frozen_replay` provides a separate, explicit compatibility adapter for this case. It does not relax the normal unified-ingestion validator. The adapter may qualify a legacy snapshot only when all of the following are true:
+`legacy_frozen_replay` provides a separate, explicit compatibility adapter for this case. It does not relax the normal unified-ingestion validator. The adapter has two provenance modes:
 
-- the source is an `AILS11S-*` scheduled Shadow and the requested source attempt is fully qualified;
-- fresh-read durable `Lite_Runs` evidence contains exactly one attempt for that source run, and it is the requested attempt;
+1. **Durable Run ledger mode**: fresh-read `Lite_Runs` evidence contains exactly one attempt for the source run, and it is the requested attempt.
+2. **Missing durable Run attestation mode**: fresh-read `Lite_Runs` contains zero attempts for the source run, the caller explicitly supplies `missing_durable_run_ledger_v1`, and the in-memory qualification alias is deterministically `<source_run>-A1`.
+
+The second mode is intentionally narrow. The attestation is an execution-time assertion about fresh-read absence of a historical Run row; it does not create, backfill, or imply that an `A1` Run row ever existed. If any durable attempt is present, attestation mode is forbidden and cannot override mismatched or multiple attempt evidence.
+
+In either provenance mode, the adapter may qualify a legacy snapshot only when all of the following are true:
+
+- the source is an `AILS11S-*` scheduled Shadow and the requested qualification attempt is fully qualified;
 - every active source `collector/*` Signal has blank `origin_attempt_id` and every source Structured Coverage row has blank `attempt_id`; mixed old/new provenance fails closed;
 - Signal identity is unique and complete, Coverage route identity is unique and complete, and per-route persisted active Signal counts exactly match `relevant_signal_count` using `(producer_id, channel_id, route_id, source_id)`;
 - the caller supplies a fingerprint of the historical rows exactly as persisted, and it matches a fresh recomputation;
 - source-run Worker/Rescue Signals remain excluded.
 
-On success the adapter creates attempt-qualified copies only in memory and computes the fingerprint expected by the unchanged strict frozen-input validator. It never edits the historical scheduled Run, Signal, Coverage, Candidate, DailyItems, or EventIndex ledgers. Any ambiguity in source attempt identity, provenance, route reconciliation, or fingerprint fails closed.
+On success the adapter creates attempt-qualified copies only in memory and computes the fingerprint expected by the unchanged strict frozen-input validator. The returned `provenance_mode` records whether qualification came from the durable Run ledger or the explicit missing-ledger attestation. The adapter never edits the historical scheduled Run, Signal, Coverage, Candidate, DailyItems, or EventIndex ledgers. Any ambiguity in source attempt identity, provenance, route reconciliation, or fingerprint fails closed.
 
 ## Sealed G2 checkpoint continuation into G3
 
