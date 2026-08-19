@@ -57,3 +57,32 @@ Some immutable historical scheduled snapshots were persisted before Structured c
 - source-run Worker/Rescue Signals remain excluded.
 
 On success the adapter creates attempt-qualified copies only in memory and computes the fingerprint expected by the unchanged strict frozen-input validator. It never edits the historical scheduled Run, Signal, Coverage, Candidate, DailyItems, or EventIndex ledgers. Any ambiguity in source attempt identity, provenance, route reconciliation, or fingerprint fails closed.
+
+## Sealed G2 checkpoint continuation into G3
+
+During controlled diagnostic acceptance work, a downstream gate may continue from an already executed and persisted same-attempt G2 checkpoint instead of rerunning Worker discovery. This is intended to isolate downstream contract changes from new search variance.
+
+The G2 -> G3 handoff is read-only. G3 consumes the same-attempt persisted Worker route summaries, Worker Coverage, and active Worker Signals and reconciles them against the route contract. It does not execute searches, open pages, create new Worker Signals, or rewrite historical rows.
+
+The authoritative route universe for this handoff is built as follows:
+
+- current canonical base Worker routes remain the normal contract;
+- registry-derived source routes that are due for the report date are valid route-universe extensions when same-attempt persisted route-summary evidence resolves them to exactly one channel;
+- the due-source integrity validator remains an independent check that every due source has exactly one matching route summary and Coverage row and that source, channel, and execution status reconcile;
+- a route required by the due-source contract must not simultaneously be treated as an orphan by Worker Audit.
+
+Historical manual checkpoints may explicitly opt into one narrow C1 broad-route compatibility bridge: `worker/c1/broad/0N` may be reconciled to persisted `worker/broad/N` only when the persisted route summary is uniquely identified and carries the exact `materialized_from_sealed_g2_journal` marker. Canonical and legacy identities appearing together fail closed. The bridge changes only the in-memory validation universe; it never edits the checkpoint rows.
+
+Use the dedicated read-only validator for this case:
+
+```text
+python -m ails_intel.g3_checkpoint_validator \
+  --date YYYY-MM-DD \
+  --run-key AILS11M-... \
+  --attempt AILS11M-...-A<n> \
+  --allow-legacy-g2-route-aliases
+```
+
+`--allow-legacy-g2-route-aliases` is not a normal production relaxation. Omit it for current canonical attempts. Final Shadow acceptance exposes the same explicit switch so a controlled downstream continuation uses the identical route handoff at G3 and G8.
+
+A failed or ambiguous handoff must stop at G3. Do not repair an earlier attempt in place merely to satisfy validation. Once the downstream contracts have been stabilized through checkpoint continuation, perform one clean end-to-end replay under the then-current canonical contracts for final certification.
