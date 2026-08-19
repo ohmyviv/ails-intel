@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import date
 
 from ails_intel.auth import build_sheets_service, spreadsheet_id_from_env
 from ails_intel.runtime import load_active_config
@@ -37,7 +36,6 @@ def main() -> None:
     store = SheetsStore(service, spreadsheet_id_from_env())
     active_cfg = load_active_config(store)
     cfg = {key: entry.value for key, entry in active_cfg.items()}
-    tz = ZoneInfo(str(cfg.get("timezone", "Asia/Shanghai")))
     report_date = date.fromisoformat(args.date).isoformat()
     run_key = str(args.run_key).strip()
     attempt_id = str(args.attempt).strip()
@@ -116,7 +114,6 @@ def main() -> None:
         run_key=run_key,
         attempt_id=attempt_id,
         report_date=report_date,
-        checked_at_bjt=datetime.now(tz).isoformat(),
         base_route_count=base_route_count,
         route_count=final_route_count,
         due_source_required_count=due_required_count,
