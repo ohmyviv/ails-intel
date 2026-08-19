@@ -9,6 +9,10 @@ from ails_intel.unified_ingestion import structured_snapshot_fingerprint
 from ails_intel.worker_contract import SHADOW_RUN_RE
 
 
+LEGACY_PROVENANCE_DURABLE_RUN_LEDGER = "durable_run_ledger"
+LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN = "missing_durable_run_ledger_v1"
+
+
 @dataclass(frozen=True)
 class QualifiedLegacyStructuredSnapshot:
     """In-memory attempt-qualified view of one immutable legacy snapshot."""
@@ -17,6 +21,7 @@ class QualifiedLegacyStructuredSnapshot:
     coverage_rows: tuple[dict[str, object], ...]
     persisted_fingerprint: str
     qualified_fingerprint: str
+    provenance_mode: str
 
 
 def _text(value: object) -> str:
@@ -77,30 +82,53 @@ def qualify_legacy_frozen_structured_snapshot(
     active_signals: Iterable[Mapping[str, object]],
     coverage_rows: Iterable[Mapping[str, object]],
     expected_persisted_fingerprint: str,
+    source_provenance_attestation: str = "",
 ) -> QualifiedLegacyStructuredSnapshot:
     """Authorize a narrow pre-contract snapshot without editing history.
 
     The adapter is intentionally separate from the normal unified-ingestion
-    validator. It accepts only a scheduled Shadow source whose durable Run
-    ledger proves exactly one attempt; all source collector rows must have blank
-    attempt provenance; Structured Signal/Coverage identities must reconcile at
-    route level; and the caller-supplied fingerprint must match the full
-    persisted legacy snapshot. On success it returns copies with attempt fields
-    populated *in memory* so the unchanged strict frozen-input validator can be
-    used downstream.
+    validator. Normally it accepts only a scheduled Shadow source whose durable
+    Run ledger proves exactly one attempt. A narrower compatibility path exists
+    for historical snapshots that have *no* durable Run row at all: the caller
+    must explicitly attest ``missing_durable_run_ledger_v1`` and use the
+    deterministic in-memory ``<source_run>-A1`` qualification alias. The
+    attestation never creates or rewrites a historical Run fact and cannot
+    override any conflicting durable attempt evidence.
+
+    In both modes all source collector rows must have blank attempt provenance;
+    Structured Signal/Coverage identities must reconcile at route level; and the
+    caller-supplied fingerprint must match the full persisted legacy snapshot.
+    On success the adapter returns copies with attempt fields populated *in
+    memory* so the unchanged strict frozen-input validator can be used
+    downstream.
     """
     source_run = _text(source_run_key)
     source_attempt = _text(source_attempt_id)
     expected = _text(expected_persisted_fingerprint)
+    attestation = _text(source_provenance_attestation)
     errors: list[str] = []
 
     if not SHADOW_RUN_RE.match(source_run) or not source_run.startswith("AILS11S-"):
         errors.append("legacy_frozen_source_not_scheduled_shadow")
     if not source_attempt.startswith(f"{source_run}-A"):
         errors.append("legacy_frozen_attempt_not_qualified")
+
     durable_attempts = sorted({_text(value) for value in source_attempt_ids if _text(value)})
-    if durable_attempts != [source_attempt]:
-        errors.append("legacy_frozen_source_attempt_not_unique")
+    provenance_mode = ""
+    if durable_attempts:
+        if durable_attempts != [source_attempt]:
+            errors.append("legacy_frozen_source_attempt_not_unique")
+        if attestation:
+            errors.append("legacy_frozen_attestation_requires_missing_durable_attempt")
+        provenance_mode = LEGACY_PROVENANCE_DURABLE_RUN_LEDGER
+    else:
+        if attestation != LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN:
+            errors.append("legacy_frozen_missing_durable_attempt_attestation_required")
+        if source_attempt != f"{source_run}-A1":
+            errors.append("legacy_frozen_attested_attempt_alias_must_be_a1")
+        if attestation == LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN:
+            provenance_mode = LEGACY_PROVENANCE_ATTESTATION_MISSING_DURABLE_RUN
+
     if not expected:
         errors.append("legacy_frozen_persisted_fingerprint_missing")
 
@@ -215,4 +243,5 @@ def qualify_legacy_frozen_structured_snapshot(
         coverage_rows=tuple(qualified_coverage),
         persisted_fingerprint=actual_persisted,
         qualified_fingerprint=qualified_fingerprint,
+        provenance_mode=provenance_mode,
     )
