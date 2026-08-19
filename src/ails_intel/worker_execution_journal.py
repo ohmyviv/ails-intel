@@ -25,6 +25,21 @@ COUNT_FIELDS = (
     "fresh_results",
     "qualifying_results",
 )
+RESULT_IDENTITY_FIELDS = ("result_title", "result_url", "result_source")
+RESULT_ROW_EVIDENCE_FIELDS = (
+    "channel_id",
+    "route_id",
+    "record_type",
+    "result_rank",
+    "result_title",
+    "result_url",
+    "result_source",
+    "published_at",
+    "opened",
+    "disposition",
+    "reject_reason",
+    "signal_id",
+)
 
 
 def _text(value: object) -> str:
@@ -126,6 +141,39 @@ def _route_key(event: Mapping[str, object]) -> tuple[str, str]:
     return (_text(event.get("channel_id")), _text(event.get("route_id")))
 
 
+def _result_rank(event: Mapping[str, object]) -> int:
+    rank = _exact_nonnegative_int(event.get("result_rank"))
+    if rank is None or rank < 1:
+        raise ValueError("result_rank_invalid")
+    return rank
+
+
+def _screened_result_events(events: Iterable[Mapping[str, object]]) -> list[Mapping[str, object]]:
+    return [event for event in events if _text(event.get("event_type")) == "result_screened"]
+
+
+def _successful_open_ranks(events: Iterable[Mapping[str, object]]) -> set[int]:
+    ranks: set[int] = set()
+    for event in events:
+        if _text(event.get("event_type")) != "page_opened" or event.get("success") is not True:
+            continue
+        rank = _exact_nonnegative_int(event.get("result_rank"))
+        if rank is not None and rank >= 1:
+            ranks.add(rank)
+    return ranks
+
+
+def _result_screened_evidence_errors(event: Mapping[str, object]) -> list[str]:
+    errors: list[str] = []
+    for field in RESULT_IDENTITY_FIELDS:
+        if not _text(event.get(field)):
+            errors.append(f"execution_journal_{field}_missing")
+    disposition = _text(event.get("disposition"))
+    if disposition == "qualified_signal" and not _text(event.get("signal_id")):
+        errors.append("execution_journal_signal_id_missing")
+    return errors
+
+
 def derive_route_summary(events: Iterable[Mapping[str, object]]) -> dict[str, object]:
     route_events = list(events)
     if not route_events:
@@ -162,7 +210,7 @@ def derive_route_summary(events: Iterable[Mapping[str, object]]) -> dict[str, ob
     else:
         raise ValueError("search_terminal_event_invalid")
 
-    screened_events = [event for event in route_events if _text(event.get("event_type")) == "result_screened"]
+    screened_events = _screened_result_events(route_events)
     opened_events = [
         event
         for event in route_events
@@ -211,6 +259,74 @@ def materialize_route_summary(
     return {**base, **derive_route_summary(events)}
 
 
+def materialize_route_result_rows(
+    events: Iterable[Mapping[str, object]],
+    *,
+    max_result_rows: int = 5,
+    base_fields: Mapping[str, object] | None = None,
+) -> list[dict[str, object]]:
+    """Project deterministic WorkerAudit result rows from a sealed route journal.
+
+    All identity and disposition evidence comes from durable ``result_screened``
+    events. ``opened`` is derived from successful ``page_opened`` events. The
+    deterministic representative order is: qualifying results, then fresh
+    results, then successfully opened results, then original result rank.
+    """
+    if isinstance(max_result_rows, bool) or not isinstance(max_result_rows, int) or max_result_rows < 0:
+        raise ValueError("max_result_rows_invalid")
+
+    route_events = list(events)
+    summary = derive_route_summary(route_events)
+    screened_events = _screened_result_events(route_events)
+    evidence_errors = sorted(
+        {
+            error
+            for event in screened_events
+            for error in _result_screened_evidence_errors(event)
+        }
+    )
+    if evidence_errors:
+        raise ValueError("result_screened_evidence_incomplete:" + ",".join(evidence_errors))
+
+    base = dict(base_fields or {})
+    if set(RESULT_ROW_EVIDENCE_FIELDS).intersection(base):
+        raise ValueError("base_fields_must_not_override_result_evidence")
+
+    opened_ranks = _successful_open_ranks(route_events)
+
+    def sort_key(event: Mapping[str, object]) -> tuple[int, int, int, int]:
+        rank = _result_rank(event)
+        return (
+            0 if _text(event.get("disposition")) == "qualified_signal" else 1,
+            0 if event.get("fresh") is True else 1,
+            0 if rank in opened_ranks else 1,
+            rank,
+        )
+
+    selected = sorted(screened_events, key=sort_key)[:max_result_rows]
+    rows: list[dict[str, object]] = []
+    for event in selected:
+        rank = _result_rank(event)
+        disposition = _text(event.get("disposition"))
+        row: dict[str, object] = {
+            **base,
+            "channel_id": summary["channel_id"],
+            "route_id": summary["route_id"],
+            "record_type": "result_row",
+            "result_rank": rank,
+            "result_title": _text(event.get("result_title")),
+            "result_url": _text(event.get("result_url")),
+            "result_source": _text(event.get("result_source")),
+            "published_at": _text(event.get("published_at")),
+            "opened": rank in opened_ranks,
+            "disposition": disposition,
+            "reject_reason": _text(event.get("reject_reason")) if disposition == "rejected" else "",
+            "signal_id": _text(event.get("signal_id")) if disposition == "qualified_signal" else "",
+        }
+        rows.append(row)
+    return rows
+
+
 def validate_summary_against_events(
     summary: Mapping[str, object], events: Iterable[Mapping[str, object]]
 ) -> list[str]:
@@ -229,6 +345,38 @@ def validate_summary_against_events(
                 errors.append(f"execution_fact_mismatch:{field}")
         elif _text(actual) != _text(expected):
             errors.append("execution_fact_mismatch:execution_status")
+    return sorted(set(errors))
+
+
+def validate_result_rows_against_events(
+    result_rows: Iterable[Mapping[str, object]],
+    events: Iterable[Mapping[str, object]],
+    *,
+    max_result_rows: int = 5,
+) -> list[str]:
+    """Ensure persisted WorkerAudit result rows equal the journal projection."""
+    try:
+        expected = materialize_route_result_rows(events, max_result_rows=max_result_rows)
+    except ValueError as exc:
+        return [f"execution_journal_result_rows_unmaterializable:{exc}"]
+
+    actual = list(result_rows)
+    if len(actual) != len(expected):
+        return ["worker_audit_result_row_count_mismatch"]
+
+    errors: list[str] = []
+    for actual_row, expected_row in zip(actual, expected, strict=True):
+        for field in RESULT_ROW_EVIDENCE_FIELDS:
+            expected_value = expected_row.get(field)
+            actual_value = actual_row.get(field)
+            if field == "result_rank":
+                if _exact_nonnegative_int(actual_value) != expected_value:
+                    errors.append(f"worker_audit_result_evidence_mismatch:{field}")
+            elif field == "opened":
+                if actual_value is not expected_value:
+                    errors.append(f"worker_audit_result_evidence_mismatch:{field}")
+            elif _text(actual_value) != _text(expected_value):
+                errors.append(f"worker_audit_result_evidence_mismatch:{field}")
     return sorted(set(errors))
 
 
@@ -314,10 +462,12 @@ def validate_worker_execution_journal(
                 errors.append("execution_event_order_violation:screen_before_search_journal")
             if event.get("fresh") not in {True, False}:
                 errors.append("execution_journal_fresh_flag_invalid")
-            if _text(event.get("disposition")) not in DISPOSITIONS:
+            disposition = _text(event.get("disposition"))
+            if disposition not in DISPOSITIONS:
                 errors.append("execution_journal_disposition_invalid")
-            if _text(event.get("disposition")) == "rejected" and not _text(event.get("reject_reason")):
+            if disposition == "rejected" and not _text(event.get("reject_reason")):
                 errors.append("execution_journal_reject_reason_missing")
+            errors.extend(_result_screened_evidence_errors(event))
 
         elif event_type == "route_finalized":
             if not any(kind in {"search_returned", "search_failed"} for kind in prior_types):
